@@ -1,0 +1,20 @@
+{
+  "name": "browser-checkin",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "浏览器会话复用的脚本猫签到工具集",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NameHitherto/browser-checkin.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/build.mjs --check",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "license": "MIT"
+}

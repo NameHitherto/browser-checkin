@@ -1,0 +1,64 @@
+[
+  {
+    "id": "zhiyao",
+    "name": "知遥 API",
+    "adapter": "zhiyao",
+    "url": "https://zhiyaoapi.top/dashboard",
+    "hosts": [
+      "zhiyaoapi.top"
+    ],
+    "matches": [
+      "https://zhiyaoapi.top/*"
+    ],
+    "autoPaths": [
+      "/dashboard",
+      "/dashboard/"
+    ],
+    "defaultEnabled": true,
+    "loginPaths": [
+      "/"
+    ],
+    "loginPrefixes": []
+  },
+  {
+    "id": "ecy",
+    "name": "ECY Cloud",
+    "adapter": "ecy",
+    "url": "https://owo.ecycloud.com/user",
+    "hosts": [
+      "owo.ecycloud.com"
+    ],
+    "matches": [
+      "https://owo.ecycloud.com/user*",
+      "https://owo.ecycloud.com/auth/*"
+    ],
+    "autoPaths": [
+      "/user",
+      "/user/"
+    ],
+    "defaultEnabled": true,
+    "loginPaths": [],
+    "loginPrefixes": [
+      "/auth/"
+    ]
+  },
+  {
+    "id": "kuku",
+    "name": "库库 AI",
+    "adapter": "kuku",
+    "url": "https://kuku.baidu.com/operation/activitys/kukuPcSignAct/main",
+    "hosts": [
+      "kuku.baidu.com"
+    ],
+    "matches": [
+      "https://kuku.baidu.com/*"
+    ],
+    "autoPaths": [
+      "/operation/activitys/kukuPcSignAct/main",
+      "/operation/activitys/kukuPcSignAct/main/"
+    ],
+    "defaultEnabled": true,
+    "loginPaths": [],
+    "loginPrefixes": []
+  }
+]

@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+*.local.*
+*.har
+cookies*.json
+auth*.json
+*.log
+*.zip
+Thumbs.db
+.DS_Store
