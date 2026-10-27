@@ -12,12 +12,17 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard') {
   let now = 1792854000000;
   class Clock extends Date { static now() { return now; } }
   const values = new Map(), saved = new Map(), calls = [], timers = new Set();
-  const elements = new Map();
+  const elements = new Map(), xpaths = new Map(), clockJobs = [];
+  function advance(ms) {
+    now += ms;
+    for (const job of clockJobs.filter(job => !job.done && job.at <= now)) { job.done = true; job.fn(); }
+  }
   const document = {
     readyState: 'loading', scripts: [], body: {innerText:'',appendChild(){}},
     createElement: () => ({ style: {}, textContent: '' }),
     querySelector: selector => elements.get(selector) || null,
     querySelectorAll: selector => elements.get(selector) || [],
+    evaluate: xpath => ({singleNodeValue:xpaths.get(xpath) || null}),
     addEventListener() {},
   };
   const context = {
@@ -27,12 +32,12 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard') {
     sessionStorage: {getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},
     localStorage: {getItem:()=> 'FAKE-TOKEN'},
     navigator: {locks: { request:async(_key, callback)=> callback() }},
-    getComputedStyle:()=>({visibility:'visible'}),
+    getComputedStyle:element=>({visibility:element?.style?.visibility || 'visible',display:element?.style?.display || 'block'}),
     console:{info(){},error(){}},
     GM: {getValue:async(k,v)=>saved.has(k)?saved.get(k):v, setValue:async(k,v)=>saved.set(k,v)},
     GM_getValue:(k,v)=>saved.has(k)?saved.get(k):v, GM_setValue:(k,v)=>saved.set(k,v),
     GM_registerMenuCommand(){},GM_openInTab(){},GM_log(){},GM_notification(){},
-    setTimeout:(fn,ms)=>{const t=setTimeout(()=>{timers.delete(t);now+=ms;fn()},0);timers.add(t);return t},
+    setTimeout:(fn,ms)=>{const t=setTimeout(()=>{timers.delete(t);advance(ms);fn()},0);timers.add(t);return t},
     clearTimeout:t=>{timers.delete(t);clearTimeout(t)},
     fetch:async(url, opts={})=>{calls.push({url,opts});throw Error('Unexpected request')},
     DOMParser:class {parseFromString(){return document}},
@@ -41,7 +46,7 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard') {
   const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, scheduledTick, parseTimes, openSite };\n  if (document.readyState === \'loading\')');
   vm.runInContext(injected,sandbox);
   const json=(data,status=200,url=`https://${host}/`) => ({status,ok:status>=200&&status<300,url,text:async()=>JSON.stringify(data)});
-  return {sandbox,api:sandbox.testAPI,calls,elements,saved,values,json,cleanup(){for(const t of timers)clearTimeout(t)}};
+  return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
 }
 async function test(name,fn){await nodeTest(name,async()=>{await fn();reports.push({name,passed:true})})}
 
@@ -66,20 +71,116 @@ await test('知遥：状态结构变更时不猜测接口语义',async()=>{
 await test('知遥：HTTP 200 但复核未签不报告成功',async()=>{
  const e=env();e.sandbox.fetch=async()=>e.json({today_checked_in:false});assert.equal((await e.api.zhiyao()).status,'unknown');e.cleanup();
 });
-await test('ECY：今日已签状态不发送请求',async()=>{
- const e=env('owo.ecycloud.com','/user');e.elements.set('#checkin-btn',{textContent:'今日已签到'});assert.equal((await e.api.ecy()).status,'already');assert.equal(e.calls.length,0);e.cleanup();
+const ecyClosePath = '/html/body/main[2]/div/section/div[4]/div/div/div[2]/p/button';
+const ecySignPath = '/html/body/main[2]/div/section/div[1]/div[3]/div[1]/div[2]/div[2]/div[6]/div';
+function ecyElement(text = '', classes = []) {
+  const children = new Map(), attributes = new Map();
+  const element = {
+    textContent:text, style:{}, disabled:false, parentElement:null, children,
+    get innerText(){return this.textContent},
+    classList:{contains:name=>classes.includes(name)},
+    getClientRects(){return this.style.display === 'none' ? [] : [{}]},
+    getAttribute(name){return attributes.get(name) ?? null},
+    setAttribute(name,value){attributes.set(name,String(value))},
+    querySelector(selector){for(const key of selector.split(',').map(s=>s.trim()))if(children.has(key))return children.get(key);return null},
+    querySelectorAll(selector){const found=[];for(const key of selector.split(',').map(s=>s.trim()))if(children.has(key))found.push(children.get(key));return [...new Set(found)]},
+    closest(selector){if(selector.split(',').some(key=>key.trim()==='.modal'&&classes.includes('modal')))return this;return this.parentElement?.closest(selector) || null},
+    click(){},
+  };
+  return element;
+}
+function ecyUi() {
+  const e=env('owo.ecycloud.com','/user'), actions=[], modals=[];
+  e.sandbox.document.readyState='complete';
+  const area=ecyElement('签到'), button=ecyElement('签到');
+  area.children.set('#checkin',button);button.parentElement=area;
+  e.elements.set('#checkin-btn',area);e.elements.set('#checkin',button);e.xpaths.set(ecySignPath,area);
+  const originalQuery=e.sandbox.document.querySelector;
+  e.sandbox.document.querySelector=selector=>{
+    for(const key of selector.split(',').map(s=>s.trim())){const value=originalQuery(key);if(value)return value}
+    return null;
+  };
+  e.sandbox.document.querySelectorAll=selector=>{
+    const found=[];
+    for(const key of selector.split(',').map(s=>s.trim())){
+      if(key==='.modal'||key==='[role="dialog"]')found.push(...modals);
+      else {const value=e.elements.get(key);if(value)found.push(...(Array.isArray(value)?value:[value]));}
+    }
+    return [...new Set(found)];
+  };
+  const signed=()=>{area.textContent='今日已签到';button.textContent='今日已签到'};
+  button.click=()=>{actions.push('sign');signed()};
+  function popup({name='popup',id='#latestAnnouncementModal',xpath=true,stuck=false}={}){
+    const modal=ecyElement('公告',['modal']), close=ecyElement('关闭');
+    close.parentElement=modal;modals.push(modal);e.elements.set(id,modal);
+    for(const selector of ['[data-dismiss="modal"]','[data-bs-dismiss="modal"]','button.close'])modal.children.set(selector,close);
+    close.click=()=>{actions.push(name);if(!stuck){modal.style.display='none';close.style.display='none'}};
+    if(xpath)e.xpaths.set(ecyClosePath,close);
+    return {modal,close};
+  }
+  const prompt=text=>{const message=ecyElement(text);e.elements.set('#msg',message);return message};
+  return {...e,area,button,actions,modals,signed,popup,prompt};
+}
+await test('ECY：今日已签到不点击且不直接发送请求',async()=>{
+ const e=ecyUi();e.signed();assert.equal((await e.api.ecy()).status,'already');assert.deepEqual(e.actions,[]);assert.equal(e.calls.length,0);e.cleanup();
 });
-await test('ECY：验证码启用或无法确认时不提交',async()=>{
- for(const setting of ['true','undefined']){const e=env('owo.ecycloud.com','/user');e.elements.set('#checkin',{});e.sandbox.document.scripts=[{textContent:`window.UserIndexConfig = {enableCheckin:true,enableCheckinCaptcha:${setting}}`}];assert.equal((await e.api.ecy()).status,'manual');assert.equal(e.calls.length,0);e.cleanup()}
+await test('ECY：按用户 XPath 先关闭弹窗再点击容器内真实按钮',async()=>{
+ const e=ecyUi();e.popup();e.area.click=()=>assert.fail('must click nested official handler');
+ assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','sign']);assert.equal(e.calls.length,0);e.cleanup();
 });
-await test('ECY：成功必须有官网刷新状态复核',async()=>{
- const e=env('owo.ecycloud.com','/user');e.elements.set('#checkin',{});e.sandbox.document.scripts=[{textContent:'window.UserIndexConfig = {enableCheckin:true,enableCheckinCaptcha:false}'}];
- e.sandbox.fetch=async(url,opts)=>{e.calls.push({url,opts});return e.calls.length===1?e.json({ret:1,msg:'ok'}):{ok:true,url:'https://owo.ecycloud.com/user',text:async()=>'<html/>'}};
- e.sandbox.DOMParser=class {parseFromString(){return {querySelector:()=>({textContent:'今日已签到'})}}};
- assert.equal((await e.api.ecy()).status,'success');assert.equal(e.calls[0].opts.body,'');assert.equal(e.calls[0].opts.credentials,'same-origin');e.cleanup();
+await test('ECY：没有弹窗和验证码配置也可点击官网签到',async()=>{
+ const e=ecyUi();assert.deepEqual(e.sandbox.document.scripts,[]);assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['sign']);assert.equal(e.calls.length,0);e.cleanup();
 });
-await test('ECY：服务端报告成功但页面未确认时为未知',async()=>{
- const e=env('owo.ecycloud.com','/user');e.elements.set('#checkin',{});e.sandbox.document.scripts=[{textContent:'window.UserIndexConfig={enableCheckinCaptcha:false}'}];e.sandbox.fetch=async()=>e.json({ret:true});assert.equal((await e.api.ecy()).status,'unknown');e.cleanup();
+await test('ECY：仅 XPath 区域可用时点击明确的签到入口',async()=>{
+ const e=ecyUi();e.elements.delete('#checkin');e.elements.delete('#checkin-btn');e.area.children.clear();e.area.click=()=>{e.actions.push('region-sign');e.area.textContent='今日已签到'};
+ assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['region-sign']);e.cleanup();
+});
+await test('ECY：布局 XPath 变化时通过已知语义按钮回退',async()=>{
+ const e=ecyUi();e.xpaths.delete(ecySignPath);e.popup({xpath:false});assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','sign']);e.cleanup();
+});
+await test('ECY：延迟弹窗出现后关闭并等待消失再签到',async()=>{
+ const e=ecyUi();e.after(500,()=>e.popup());assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','sign']);e.cleanup();
+});
+await test('ECY：弹窗关闭失败仅尝试一次且不签到',async()=>{
+ const e=ecyUi();e.popup({stuck:true});assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,['popup']);assert.equal(e.calls.length,0);e.cleanup();
+});
+await test('ECY：公告关闭后出现的官网提示也先关闭',async()=>{
+ const e=ecyUi(), first=e.popup();const close=first.close.click;first.close.click=()=>{close();e.after(250,()=>e.popup({name:'result',id:'#result',xpath:false}))};
+ assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','result','sign']);e.cleanup();
+});
+await test('ECY：弹窗消失后等待残留遮罩及稳定期结束才签到',async()=>{
+ const e=ecyUi(), popup=e.popup(), backdrop=ecyElement();e.elements.set('.modal-backdrop',[backdrop]);let clearedAt;
+ const close=popup.close.click;popup.close.click=()=>{close();e.after(1000,()=>{backdrop.style.display='none';clearedAt=e.sandbox.Date.now()})};
+ e.button.click=()=>{assert.ok(clearedAt);assert.ok(e.sandbox.Date.now()-clearedAt>=750);e.actions.push('sign');e.signed()};
+ assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','sign']);e.cleanup();
+});
+await test('ECY：未知对话框遮挡时停止且不点击猜测的关闭按钮',async()=>{
+ const e=ecyUi(), dialog=ecyElement('需要人工处理',['modal']);dialog.children.set('button.close',{click:()=>assert.fail('must not dismiss unknown modal')});e.modals.push(dialog);
+ assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,[]);e.cleanup();
+});
+await test('ECY：等待页面加载及官网按钮延迟挂载',async()=>{
+ const e=ecyUi();e.sandbox.document.readyState='interactive';e.elements.delete('#checkin');e.elements.delete('#checkin-btn');e.xpaths.delete(ecySignPath);
+ e.after(2000,()=>{e.sandbox.document.readyState='complete'});e.after(2500,()=>{e.elements.set('#checkin',e.button);e.elements.set('#checkin-btn',e.area);e.xpaths.set(ecySignPath,e.area)});
+ const started=e.sandbox.Date.now();e.button.click=()=>{assert.ok(e.sandbox.Date.now()-started>=3000);e.actions.push('sign');e.signed()};
+ assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('ECY：官网异步刷新已签状态后才报告成功',async()=>{
+ const e=ecyUi();e.button.click=()=>{e.actions.push('sign');e.after(1500,e.signed)};assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('ECY：实际人机验证提示停止自动操作',async()=>{
+ const e=ecyUi();e.button.click=()=>{e.actions.push('sign');e.prompt('请完成人机验证')};assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,['sign']);assert.equal(e.calls.length,0);e.cleanup();
+});
+await test('ECY：官网登录提示与登录跳转均停止提交',async()=>{
+ for(const redirect of [false,true]){const e=ecyUi();e.button.click=()=>{e.actions.push('sign');if(redirect)e.sandbox.location.pathname='/auth/login';else e.prompt('请先登录')};assert.equal((await e.api.ecy()).status,'login');assert.deepEqual(e.actions,['sign']);e.cleanup()}
+});
+await test('ECY：明确签到失败提示只报告失败且不重试',async()=>{
+ const e=ecyUi();e.button.click=()=>{e.actions.push('sign');e.prompt('签到失败，请稍后重试')};assert.equal((await e.api.ecy()).status,'failed');assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('ECY：超时不重复点击且无关成功文案不算已签',async()=>{
+ const e=ecyUi();e.sandbox.document.body.innerText='签到成功 今日已签到';e.button.click=()=>{e.actions.push('sign');e.prompt('操作成功')};assert.equal((await e.api.ecy()).status,'unknown');assert.deepEqual(e.actions,['sign']);assert.equal(e.calls.length,0);e.cleanup();
+});
+await test('ECY：签到目标缺失或禁用不点击其他控件',async()=>{
+ for(const missing of [false,true]){const e=ecyUi();if(missing){e.elements.delete('#checkin');e.elements.delete('#checkin-btn');e.xpaths.delete(ecySignPath)}else e.button.disabled=true;assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,[]);e.cleanup()}
 });
 function signButton(text='立即签到',signed=false){const state={text,signed};return {state,get textContent(){return state.text},classList:{contains:k=>k==='is-signed'&&state.signed},getClientRects:()=>[{}],click(){},disabled:false}}
 await test('库库：已签按钮不点击，也不触发抽奖',async()=>{
