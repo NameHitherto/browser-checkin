@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.1.1
-// @description  按个人配置的时间自动签到；手动全签请使用执行器菜单
-// @crontab      * * * * *
+// @version      1.2.0
+// @description  浏览器启动时检查每日状态；仅打开未完成网站；跨日失效
+// @background
 // @storageName  local.namehitherto.three-sites.checkin.v1
 // @grant        GM_openInTab
 // @grant        GM_getValue

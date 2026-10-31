@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 页面执行器
 // @namespace    local.namehitherto.checkin
-// @version      1.1.1
+// @version      1.2.0
 // @description  浏览器会话复用；可配置站点开关；官网结果复核
 // @match        https://zhiyaoapi.top/*
 // @match        https://owo.ecycloud.com/user*

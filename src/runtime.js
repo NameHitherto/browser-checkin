@@ -15,33 +15,42 @@
     if (typeof value !== 'boolean') throw new Error('站点开关必须是布尔值：' + id);
     return value;
   }
-  function parseTimes(value) {
-    if (typeof value !== 'string') throw new Error('执行时间应为 HH:MM 列表');
-    const times = value.split(/[,，\s]+/).filter(Boolean);
-    if (!times.length || times.some(time => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time))) {
-      throw new Error('执行时间格式错误，例如 09:00,21:00；未执行自动任务');
-    }
-    return [...new Set(times)].sort();
-  }
-  function localSlot(date = new Date()) {
+  function localDay(date = new Date()) {
     const pad = value => String(value).padStart(2, '0');
-    const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    return { key: `${day}T${time}`, time };
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+  async function completedToday(id) {
+    const saved = await read('completed:' + id, null);
+    return saved?.day === localDay() && ['success', 'already'].includes(saved.status);
+  }
+  async function saveCompletion(id, outcome, day) {
+    // A request straddling midnight cannot prove completion for the new day.
+    if (day === localDay() && ['success', 'already'].includes(outcome.status)) {
+      await write('completed:' + id, { day, status: outcome.status, at: Date.now() });
+    }
   }
 
   async function runBatch() {
     const sites = [];
     for (const site of Object.values(SITE)) if (await siteEnabled(site.id)) sites.push(site);
     if (!sites.length) { GM_log('没有启用的站点，未打开页面'); return '没有启用的站点'; }
+    if ((await Promise.all(sites.map(site => completedToday(site.id)))).every(Boolean)) {
+      GM_log('所有已启用网站今日均已完成签到');
+      return '所有已启用网站今日均已完成签到';
+    }
     const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const prior = await read('batchLock', null);
-    if (prior && Date.now() - prior.at < 360000) throw new Error('已有批量签到运行，请稍后再试');
+    if (prior && Date.now() - prior.at < 360000) {
+      const error = new Error('已有批量签到运行，请稍后再试');
+      error.code = 'BATCH_BUSY';
+      throw error;
+    }
     await write('batchLock', { token: batchId, at: Date.now() });
     const results = [];
     try {
       for (const site of sites) {
         if (!(await siteEnabled(site.id))) continue;
+        if (await completedToday(site.id)) continue;
         await write('batchLock', { token: batchId, at: Date.now() });
         const token = `${batchId}_${site.id}`;
         const url = new URL(site.url);
@@ -73,7 +82,7 @@
       const labels = { success: '签到成功', already: '今日已签', login: '需要登录', manual: '需要人工', disabled: '已停用' };
       const summary = results.map(row => `${row.name}：${labels[row.status] || '未完成'}`).join('\n');
       await write('batchLast', { at: Date.now(), results });
-      if (await setting('behavior.notifications', true)) {
+      if (results.length && await setting('behavior.notifications', true)) {
         try { GM_notification({ title: '网页签到结果', text: summary, timeout: 12000 }); } catch { /* Logs remain available. */ }
       }
       if (failures.length) throw new Error(`${failures.length}个站点未完成，页面已保留；请查看运行日志`);
@@ -84,13 +93,22 @@
     }
   }
 
-  async function scheduledTick(date = new Date()) {
+  let checkedDay = null;
+  let checking = null;
+  async function scheduledTick() {
+    if (checking) return checking;
+    const day = localDay();
+    if (checkedDay === day) return '本次浏览器会话今日已检查';
+    // The usual idle path above never crosses the extension storage boundary.
     if (!(await setting('schedule.enabled', true))) return '自动调度已关闭';
-    const slot = localSlot(date);
-    const times = parseTimes(await setting('schedule.times', '09:00,21:00'));
-    if (!times.includes(slot.time)) return '当前未到执行时间';
-    if (await read('scheduleLast', '') === slot.key) return '本时刻已触发';
-    // Record the attempt first: a failed task must not resubmit every minute/restart.
-    await write('scheduleLast', slot.key);
-    return runBatch();
+    // Recheck after the asynchronous settings read to coalesce concurrent calls.
+    if (checking) return checking;
+    if (checkedDay === day) return '本次浏览器会话今日已检查';
+    // Session-only attempt guard: failures retry on restart, not every minute.
+    checkedDay = day;
+    checking = runBatch().catch(error => {
+      if (error.code === 'BATCH_BUSY') checkedDay = null;
+      throw error;
+    }).finally(() => { checking = null; });
+    return checking;
   }

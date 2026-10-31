@@ -1,6 +1,6 @@
 {
   "name": "browser-checkin",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "浏览器会话复用的脚本猫签到工具集",

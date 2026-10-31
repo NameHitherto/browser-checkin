@@ -89,8 +89,14 @@
     running = (async () => {
       const perform = async () => {
         if (!(await siteEnabled(id))) return publish(result('disabled', '本站已在个人配置中停用'));
+        if (await completedToday(id)) return publish(result('already', '本地已记录今日成功签到'));
         show('busy', '检查当前会话及今日签到状态');
-        try { return await publish(await ADAPTERS[id]()); }
+        const day = localDay();
+        try {
+          const outcome = await ADAPTERS[id]();
+          await saveCompletion(id, outcome, day);
+          return await publish(outcome);
+        }
         catch { return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网')); }
       };
       // Chrome Web Locks prevents simultaneous tabs submitting for this origin.
@@ -114,7 +120,7 @@
       await setSetting('sites.' + id, enabled);
       show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和定时均不再提交');
     });
-    GM_registerMenuCommand('站点与时间设置', () => CAT_userConfig());
+    GM_registerMenuCommand('站点与启动设置', () => CAT_userConfig());
     // A server-side login redirect may discard the URL marker before document-start.
     if (!job && (SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
       const pending = await read('pending:' + id, null);

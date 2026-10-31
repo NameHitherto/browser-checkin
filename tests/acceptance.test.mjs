@@ -8,10 +8,10 @@ new Function(worker); new Function(scheduler);
 await fs.mkdir('test-results', {recursive:true});
 const reports = [];
 const prefix = 'three-sites:v1:';
-function env(host = 'zhiyaoapi.top', path = '/dashboard') {
+function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map()) {
   let now = 1792854000000;
-  class Clock extends Date { static now() { return now; } }
-  const values = new Map(), saved = new Map(), calls = [], timers = new Set();
+  class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
+  const values = new Map(), calls = [], timers = new Set();
   const elements = new Map(), xpaths = new Map(), clockJobs = [];
   function advance(ms) {
     now += ms;
@@ -43,10 +43,10 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard') {
     DOMParser:class {parseFromString(){return document}},
   };
   const sandbox=vm.createContext(context);
-  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, scheduledTick, parseTimes, openSite };\n  if (document.readyState === \'loading\')');
+  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, scheduledTick, localDay, completedToday, saveCompletion, openSite };\n  if (document.readyState === \'loading\')');
   vm.runInContext(injected,sandbox);
   const json=(data,status=200,url=`https://${host}/`) => ({status,ok:status>=200&&status<300,url,text:async()=>JSON.stringify(data)});
-  return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
+  return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,advance,setNow(value){now=Number(value)},after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
 }
 async function test(name,fn){await nodeTest(name,async()=>{await fn();reports.push({name,passed:true})})}
 
@@ -224,19 +224,92 @@ await test('关闭访问时签到后，普通访问不发送请求',async()=>{
 await test('加载新版和读取默认配置不覆盖个人设置',async()=>{
  const e=env();e.saved.set('sites.zhiyao',false);e.saved.set('schedule.times','10:35,23:20');e.saved.set('behavior.autoVisit',false);await e.api.main();assert.equal(e.saved.get('sites.zhiyao'),false);assert.equal(e.saved.get('schedule.times'),'10:35,23:20');e.cleanup();
 });
-await test('定时按个人时间触发且同一分钟只触发一次',async()=>{
- const e=env();e.saved.set('schedule.times','10:35,23:20');let opened=0;
- e.sandbox.GM_openInTab=url=>{opened++;const token=new URL(url).searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);e.saved.set(prefix+'result:'+id,{token,status:'already',message:'ok'});return {close(){}}};
- await e.api.scheduledTick(new Date(2026,9,24,9,0));assert.equal(opened,0);
- await e.api.scheduledTick(new Date(2026,9,24,10,35));assert.equal(opened,3);
- await e.api.scheduledTick(new Date(2026,9,24,10,35,40));assert.equal(opened,3);
- await e.api.scheduledTick(new Date(2026,9,24,23,20));assert.equal(opened,6);e.cleanup();
+function batchPages(e, statusFor = () => 'already') {
+ const opened = [], closed = [];
+ e.sandbox.GM_openInTab = url => {
+  const token = new URL(url).searchParams.get('sc_daily_checkin'), id = token.split('_').at(-1);
+  const status = statusFor(id);
+  opened.push(id);
+  e.saved.set(prefix+'result:'+id, {token,status,message:'test',at:e.sandbox.Date.now()});
+  if (['success','already'].includes(status)) e.saved.set(prefix+'completed:'+id, {day:e.api.localDay(),status,at:e.sandbox.Date.now()});
+  return {close(){closed.push(id)}};
+ };
+ return {opened,closed};
+}
+await test('启动检查不受旧时间配置限制，同会话当天不重复打开',async()=>{
+ const e=env();e.setNow(new Date(2026,10,1,14,12));e.saved.set('schedule.times','25:00');e.saved.set(prefix+'scheduleLast','old');
+ const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,3);
+ await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
 });
-await test('关闭自动调度不影响手动批量运行',async()=>{
- const e=env();e.saved.set('schedule.enabled',false);let opened=0;e.sandbox.GM_openInTab=url=>{opened++;const token=new URL(url).searchParams.get('sc_daily_checkin');e.saved.set(prefix+'result:'+token.split('_').at(-1),{token,status:'already'});return {close(){}}};await e.api.scheduledTick(new Date(2026,9,24,9,0));assert.equal(opened,0);await e.api.runBatch();assert.equal(opened,3);e.cleanup();
+await test('成功日期按本地自然日保存，次日零点失效而非24小时',async()=>{
+ const e=env();e.setNow(new Date(2026,10,1,23,59));
+ await e.api.saveCompletion('zhiyao',{status:'success'},e.api.localDay());
+ assert.equal(e.saved.get(prefix+'completed:zhiyao').day,'2026-11-01');assert.equal(await e.api.completedToday('zhiyao'),true);
+ e.setNow(new Date(2026,10,2,0,0));assert.equal(await e.api.completedToday('zhiyao'),false);e.cleanup();
 });
-await test('错误时间配置不打开任何站点',async()=>{
- const e=env();e.saved.set('schedule.times','25:00');e.sandbox.GM_openInTab=()=>assert.fail('must not open');await assert.rejects(e.api.scheduledTick(new Date(2026,9,24,9,0)),/格式错误/);e.cleanup();
+await test('逐站独立跳过今日成功，仅打开未完成、过期或未知网站',async()=>{
+ const e=env();e.setNow(new Date(2026,10,1,8,0));
+ await e.api.saveCompletion('zhiyao',{status:'already'},e.api.localDay());
+ e.saved.set(prefix+'completed:ecy',{day:'2026-10-31',status:'success'});
+ e.saved.set(prefix+'completed:kuku',{day:e.api.localDay(),status:'unknown'});
+ const pages=batchPages(e);await e.api.scheduledTick();assert.deepEqual(pages.opened,['ecy','kuku']);assert.equal(pages.closed.length,2);e.cleanup();
+});
+await test('同日重启保留成功站点，仅重新尝试失败网站',async()=>{
+ const first=env(), pages=batchPages(first,id=>id==='ecy'?'login':'success');
+ await assert.rejects(first.api.scheduledTick(),/1个站点未完成/);assert.equal(pages.opened.length,3);assert.equal(first.saved.has(prefix+'completed:ecy'),false);
+ await first.api.scheduledTick();assert.equal(pages.opened.length,3);
+ const second=env('zhiyaoapi.top','/dashboard',first.saved), retry=batchPages(second);
+ await second.api.scheduledTick();assert.deepEqual(retry.opened,['ecy']);first.cleanup();second.cleanup();
+});
+await test('所有站点今日成功时重启不打开页面也不弹批量通知',async()=>{
+ const first=env();batchPages(first);await first.api.scheduledTick();
+ const second=env('zhiyaoapi.top','/dashboard',first.saved);second.sandbox.GM_openInTab=()=>assert.fail('must not open');second.sandbox.GM_notification=()=>assert.fail('must not notify');
+ await second.api.scheduledTick();first.cleanup();second.cleanup();
+});
+await test('同会话跨日重新检查各站，跨月跨年及休眠恢复均适用',async()=>{
+ for(const [before,after] of [[new Date(2026,10,1,23,59),new Date(2026,10,2,0,0)],[new Date(2026,10,30,23,59),new Date(2026,11,1,0,0)],[new Date(2026,11,31,23,59),new Date(2027,0,1,9,0)]]) {
+  const e=env();e.setNow(before);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,3);
+  e.setNow(after);await e.api.scheduledTick();assert.equal(pages.opened.length,6);e.cleanup();
+ }
+});
+await test('页面已签缓存拦截重复请求，次日重新访问后查询官网',async()=>{
+ const e=env();let requests=0;e.sandbox.fetch=async()=>{requests++;return e.json({today_checked_in:true})};
+ await e.api.run();assert.equal(requests,1);assert.equal(await e.api.completedToday('zhiyao'),true);
+ await e.api.run();await e.api.openSite('zhiyao');assert.equal(requests,1);
+ e.advance(86400000);await e.api.run();assert.equal(requests,2);e.cleanup();
+});
+await test('登录、失败、未知、停用均不写当日成功，也不覆盖已有成功记录',async()=>{
+ const e=env();for(const status of ['login','manual','failed','unknown','disabled']){await e.api.saveCompletion('ecy',{status},e.api.localDay());assert.equal(e.saved.has(prefix+'completed:ecy'),false)}
+ await e.api.saveCompletion('ecy',{status:'already'},e.api.localDay());const saved=e.saved.get(prefix+'completed:ecy');await e.api.saveCompletion('ecy',{status:'unknown'},e.api.localDay());assert.equal(e.saved.get(prefix+'completed:ecy'),saved);e.cleanup();
+});
+await test('页面失败不写成功状态，下次人工运行仍可恢复',async()=>{
+ const e=env();e.sandbox.localStorage.getItem=()=>null;assert.equal((await e.api.run()).status,'login');assert.equal(await e.api.completedToday('zhiyao'),false);
+ e.sandbox.localStorage.getItem=()=> 'FAKE-TOKEN';e.sandbox.fetch=async()=>e.json({today_checked_in:true});assert.equal((await e.api.run()).status,'already');assert.equal(await e.api.completedToday('zhiyao'),true);e.cleanup();
+});
+await test('请求跨过零点不把前一日结果写成新一日成功',async()=>{
+ const e=env();e.setNow(new Date(2026,10,1,23,59,59));e.sandbox.fetch=async()=>{e.advance(2000);return e.json({today_checked_in:true})};
+ await e.api.run();assert.equal(e.api.localDay(),'2026-11-02');assert.equal(await e.api.completedToday('zhiyao'),false);e.cleanup();
+});
+await test('关闭自动调度不影响手动批量运行，重新启用会补做当天检查',async()=>{
+ const e=env();e.saved.set('schedule.enabled',false);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,0);await e.api.runBatch();assert.equal(pages.opened.length,3);
+ e.saved.set('schedule.enabled',true);await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
+});
+await test('尚有批次运行时稍后检查，防止启动遗留锁阻止当天签到',async()=>{
+ const e=env();e.saved.set(prefix+'batchLock',{token:'previous',at:e.sandbox.Date.now()});const pages=batchPages(e);
+ await assert.rejects(e.api.scheduledTick(),/已有批量/);assert.equal(pages.opened.length,0);
+ e.advance(360001);await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
+});
+await test('并发启动检查复用同一批次',async()=>{
+ const e=env();const pages=batchPages(e);await Promise.all([e.api.scheduledTick(),e.api.scheduledTick()]);assert.equal(pages.opened.length,3);e.cleanup();
+});
+await test('生成的后台脚本启动立即执行，循环检查跨日且失败后继续存活',async()=>{
+ const e=env();e.setNow(new Date(2026,10,1,12,0));const pages=batchPages(e,id=>id==='ecy'?'login':'success');
+ const waits=[];e.sandbox.setTimeout=(fn,ms)=>{waits.push({fn,ms});return waits.length};
+ vm.runInContext('(function(){'+scheduler+'})()',e.sandbox);
+ const settle=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmediate(resolve))};await settle();
+ assert.equal(pages.opened.length,3);assert.equal(waits.length,1);assert.equal(waits[0].ms,60000);
+ waits.shift().fn();await settle();assert.equal(pages.opened.length,3);
+ e.setNow(new Date(2026,10,2,0,0));waits.shift().fn();await settle();assert.equal(pages.opened.length,6);assert.equal(waits.length,1);e.cleanup();
 });
 await test('全部停用时不打开页面',async()=>{
  const e=env();for(const id of ['zhiyao','ecy','kuku'])e.saved.set('sites.'+id,false);e.sandbox.GM_openInTab=()=>assert.fail('must not open');assert.equal(await e.api.runBatch(),'没有启用的站点');e.cleanup();
