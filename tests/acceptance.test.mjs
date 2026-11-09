@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 const worker = await fs.readFile('dist/worker.user.js', 'utf8');
 const scheduler = await fs.readFile('dist/scheduler.user.js', 'utf8');
+const registry = JSON.parse(await fs.readFile('src/registry.json', 'utf8'));
+const enabledSites = registry.filter(site => site.defaultEnabled).map(site => site.id);
 new Function(worker); new Function(scheduler);
 await fs.mkdir('test-results', {recursive:true});
 const reports = [];
@@ -43,7 +45,7 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map()) {
     DOMParser:class {parseFromString(){return document}},
   };
   const sandbox=vm.createContext(context);
-  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, scheduledTick, localDay, completedToday, saveCompletion, openSite };\n  if (document.readyState === \'loading\')');
+  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, hifiti, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, scheduledTick, localDay, completedToday, saveCompletion, openSite };\n  if (document.readyState === \'loading\')');
   vm.runInContext(injected,sandbox);
   const json=(data,status=200,url=`https://${host}/`) => ({status,ok:status>=200&&status<300,url,text:async()=>JSON.stringify(data)});
   return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,advance,setNow(value){now=Number(value)},after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
@@ -71,7 +73,7 @@ await test('知遥：状态结构变更时不猜测接口语义',async()=>{
 await test('知遥：HTTP 200 但复核未签不报告成功',async()=>{
  const e=env();e.sandbox.fetch=async()=>e.json({today_checked_in:false});assert.equal((await e.api.zhiyao()).status,'unknown');e.cleanup();
 });
-const ecyClosePath = '/html/body/main[2]/div/section/div[4]/div/div/div[2]/p/button';
+const ecyClosePath = '/html/body/main[2]/div/section/div[5]/div/div/div[2]/div/div/div/span[2]';
 const ecySignPath = '/html/body/main[2]/div/section/div[1]/div[3]/div[1]/div[2]/div[2]/div[6]/div';
 function ecyElement(text = '', classes = []) {
   const children = new Map(), attributes = new Map();
@@ -125,7 +127,7 @@ await test('ECY：今日已签到不点击且不直接发送请求',async()=>{
  const e=ecyUi();e.signed();assert.equal((await e.api.ecy()).status,'already');assert.deepEqual(e.actions,[]);assert.equal(e.calls.length,0);e.cleanup();
 });
 await test('ECY：按用户 XPath 先关闭弹窗再点击容器内真实按钮',async()=>{
- const e=ecyUi();e.popup();e.area.click=()=>assert.fail('must click nested official handler');
+ const e=ecyUi();e.popup({id:'#updated-notice'}).modal.children.clear();e.area.click=()=>assert.fail('must click nested official handler');
  assert.equal((await e.api.ecy()).status,'success');assert.deepEqual(e.actions,['popup','sign']);assert.equal(e.calls.length,0);e.cleanup();
 });
 await test('ECY：没有弹窗和验证码配置也可点击官网签到',async()=>{
@@ -182,6 +184,74 @@ await test('ECY：超时不重复点击且无关成功文案不算已签',async(
 await test('ECY：签到目标缺失或禁用不点击其他控件',async()=>{
  for(const missing of [false,true]){const e=ecyUi();if(missing){e.elements.delete('#checkin');e.elements.delete('#checkin-btn');e.xpaths.delete(ecySignPath)}else e.button.disabled=true;assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,[]);e.cleanup()}
 });
+const hifitiSignPath = '/html/body/main/div/div/div[2]/div[1]/span';
+function hifitiUi() {
+ const e=env('www.hifiti.com','/'), actions=[];
+ e.sandbox.document.readyState='complete';
+ const button=ecyElement('签到'), label=ecyElement('签到');
+ button.children.set('#sign',label);label.parentElement=button;
+ e.xpaths.set(hifitiSignPath,button);e.elements.set('#sign',label);
+ const signed=()=>{label.textContent='已签'};
+ button.click=()=>{actions.push('sign');e.after(1000,signed)};
+ label.click=()=>button.click();
+ const prompt=text=>e.elements.set('[role="alert"], [role="dialog"], .modal, .alert, .jconfirm-content',[ecyElement(text)]);
+ return {...e,button,label,actions,signed,prompt};
+}
+await test('HiFiTi：XPath 按钮只点一次，等待嵌套 #sign 异步显示已签再记录成功',async()=>{
+ const e=hifitiUi();assert.equal((await e.api.run()).status,'success');assert.deepEqual(e.actions,['sign']);assert.equal(e.calls.length,0);
+ assert.equal(await e.api.completedToday('hifiti'),true);await e.api.run();assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('HiFiTi：初始 #sign 已签时不点击',async()=>{
+ const e=hifitiUi();e.signed();assert.equal((await e.api.run()).status,'already');assert.deepEqual(e.actions,[]);assert.equal(await e.api.completedToday('hifiti'),true);e.cleanup();
+});
+await test('HiFiTi：布局变化时使用已确认的 #sign 入口',async()=>{
+ const e=hifitiUi();e.xpaths.delete(hifitiSignPath);assert.equal((await e.api.hifiti()).status,'success');assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('HiFiTi：等待页面初始化和按钮延迟挂载',async()=>{
+ const e=hifitiUi();e.sandbox.document.readyState='interactive';e.xpaths.clear();e.elements.delete('#sign');
+ e.after(1500,()=>{e.sandbox.document.readyState='complete'});e.after(2000,()=>{e.xpaths.set(hifitiSignPath,e.button);e.elements.set('#sign',e.label)});
+ const started=e.sandbox.Date.now(),click=e.button.click;e.button.click=()=>{assert.ok(e.sandbox.Date.now()-started>=2500);click()};
+ assert.equal((await e.api.hifiti()).status,'success');assert.deepEqual(e.actions,['sign']);e.cleanup();
+});
+await test('HiFiTi：登录提示及重定向停止，失败状态不记成功',async()=>{
+ for(const mode of ['label','prompt','redirect']){const e=hifitiUi();
+  if(mode==='label')e.label.textContent='登录后签到';
+  else e.button.click=()=>{e.actions.push('sign');if(mode==='redirect')e.sandbox.location.pathname='/user-login.htm';else e.prompt('请先登录')};
+  assert.equal((await e.api.run()).status,'login');assert.equal(e.actions.length,mode==='label'?0:1);assert.equal(await e.api.completedToday('hifiti'),false);e.cleanup();
+ }
+});
+await test('HiFiTi：人工验证与明确失败提示只报告结果，不再次点击',async()=>{
+ for(const [text,status] of [['请完成人机验证','manual'],['签到失败，请稍后重试','failed']]){const e=hifitiUi();e.button.click=()=>{e.actions.push('sign');e.prompt(text)};
+  assert.equal((await e.api.run()).status,status);assert.deepEqual(e.actions,['sign']);assert.equal(await e.api.completedToday('hifiti'),false);e.cleanup();
+ }
+});
+await test('HiFiTi：结果超时、无关已签文案及普通成功提示不写成功，不重试',async()=>{
+ const e=hifitiUi();e.sandbox.document.body.innerText='今日已签 签到成功';e.button.click=()=>{e.actions.push('sign');e.prompt('操作成功')};
+ assert.equal((await e.api.run()).status,'unknown');assert.deepEqual(e.actions,['sign']);assert.equal(await e.api.completedToday('hifiti'),false);e.cleanup();
+});
+await test('HiFiTi：缺失、隐藏、禁用或语义变化的按钮不点击',async()=>{
+ for(const mode of ['missing','hidden','disabled','changed']){const e=hifitiUi();
+  if(mode==='missing'){e.xpaths.clear();e.elements.clear()}
+  if(mode==='hidden'){e.button.style.display='none';e.label.style.display='none'}
+  if(mode==='disabled')e.button.setAttribute('aria-disabled','true');
+  if(mode==='changed')e.label.textContent='补签';
+  assert.equal((await e.api.hifiti()).status,'manual');assert.deepEqual(e.actions,[]);e.cleanup();
+ }
+});
+await test('HiFiTi：开关拦截访问、手动及批量入口',async()=>{
+ const e=hifitiUi();e.saved.set('sites.hifiti',false);await e.api.main();await e.api.openSite('hifiti');assert.deepEqual(e.actions,[]);
+ const pages=batchPages(e);await e.api.runBatch();assert.deepEqual(pages.opened,enabledSites.filter(id=>id!=='hifiti'));e.cleanup();
+});
+await test('HiFiTi：关闭访问签到及访问其他页面不自动提交',async()=>{
+ const e=hifitiUi();e.saved.set('behavior.autoVisit',false);await e.api.main();assert.deepEqual(e.actions,[]);
+ e.sandbox.location.pathname='/thread-2.htm';e.saved.set('behavior.autoVisit',true);await e.api.main();assert.deepEqual(e.actions,[]);
+ assert.equal((await e.api.hifiti()).status,'manual');e.cleanup();
+});
+await test('HiFiTi：登录重定向丢失批次标记时回传登录状态',async()=>{
+ const e=env('www.hifiti.com','/user-login.htm');e.saved.set(prefix+'pending:hifiti',{token:'batch_test_hifiti',at:e.sandbox.Date.now()});await e.api.main();
+ assert.equal(e.saved.get(prefix+'result:hifiti').status,'login');assert.equal(e.saved.get(prefix+'result:hifiti').token,'batch_test_hifiti');e.cleanup();
+});
+
 function signButton(text='立即签到',signed=false){const state={text,signed};return {state,get textContent(){return state.text},classList:{contains:k=>k==='is-signed'&&state.signed},getClientRects:()=>[{}],click(){},disabled:false}}
 await test('库库：已签按钮不点击，也不触发抽奖',async()=>{
  const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton('今日已签',true);let clicks=0;b.click=()=>clicks++;e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'already');assert.equal(clicks,0);e.cleanup();
@@ -204,19 +274,19 @@ await test('跨站认证请求在发送前即被拒绝',async()=>{
 await test('ECY 登录重定向丢失网址标记后仍能回传需登录结果',async()=>{
  const e=env('owo.ecycloud.com','/auth/login');e.saved.set(prefix+'pending:ecy',{token:'batch_test_ecy',at:e.sandbox.Date.now()});await e.api.main();assert.equal(e.saved.get(prefix+'result:ecy').status,'login');assert.equal(e.saved.get(prefix+'result:ecy').token,'batch_test_ecy');assert.equal(e.calls.length,0);e.cleanup();
 });
-await test('调度器：忽略过期结果、按运行标识收集三站并关闭成功页',async()=>{
+await test('调度器：忽略过期结果、按运行标识收集全部已启用站点并关闭成功页',async()=>{
  const e=env();let closed=0,opened=0;e.saved.set(prefix+'result:zhiyao',{token:'OLD',status:'success'});
  e.sandbox.GM_openInTab=url=>{opened++;const u=new URL(url),token=u.searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);setTimeout(()=>e.saved.set(prefix+'result:'+id,{token,status:'already',message:'verified'}),1);return {close(){closed++}}};
- const run=e.api.runBatch();await run;assert.equal(opened,3);assert.equal(closed,3);assert.equal(e.saved.get(prefix+'batchLock'),null);e.cleanup();
+ const run=e.api.runBatch();await run;assert.equal(opened,enabledSites.length);assert.equal(closed,enabledSites.length);assert.equal(e.saved.get(prefix+'batchLock'),null);e.cleanup();
 });
 await test('调度器：登录失败保留页面并正确报告批次失败',async()=>{
  const e=env();let closed=0;e.sandbox.GM_openInTab=url=>{const token=new URL(url).searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);e.saved.set(prefix+'result:'+id,{token,status:id==='ecy'?'login':'already',message:'test'});return {close(){closed++}}};
- await assert.rejects(e.api.runBatch(),/1个站点未完成/);assert.equal(closed,2);assert.equal(e.saved.get(prefix+'batchLast').results.length,3);e.cleanup();
+ await assert.rejects(e.api.runBatch(),/1个站点未完成/);assert.equal(closed,enabledSites.length-1);assert.equal(e.saved.get(prefix+'batchLast').results.length,enabledSites.length);e.cleanup();
 });
 await test('禁用站点同时拦截页面签到、单站打开和批量启动',async()=>{
  const e=env();e.saved.set('sites.zhiyao',false);let opened=[];
  e.sandbox.GM_openInTab=url=>{opened.push(url);const token=new URL(url).searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);e.saved.set(prefix+'result:'+id,{token,status:'already',message:'ok'});return {close(){}}};
- assert.equal((await e.api.run()).status,'disabled');await e.api.openSite('zhiyao');await e.api.runBatch();assert.equal(e.calls.length,0);assert.equal(opened.length,2);assert.ok(!opened.some(u=>u.includes('zhiyaoapi')));e.cleanup();
+ assert.equal((await e.api.run()).status,'disabled');await e.api.openSite('zhiyao');await e.api.runBatch();assert.equal(e.calls.length,0);assert.equal(opened.length,enabledSites.length-1);assert.ok(!opened.some(u=>u.includes('zhiyaoapi')));e.cleanup();
 });
 await test('关闭访问时签到后，普通访问不发送请求',async()=>{
  const e=env();e.saved.set('behavior.autoVisit',false);await e.api.main();assert.equal(e.calls.length,0);assert.equal(e.saved.has(prefix+'result:zhiyao'),false);e.cleanup();
@@ -238,8 +308,8 @@ function batchPages(e, statusFor = () => 'already') {
 }
 await test('启动检查不受旧时间配置限制，同会话当天不重复打开',async()=>{
  const e=env();e.setNow(new Date(2026,10,1,14,12));e.saved.set('schedule.times','25:00');e.saved.set(prefix+'scheduleLast','old');
- const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,3);
- await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
+ const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);
+ await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);e.cleanup();
 });
 await test('成功日期按本地自然日保存，次日零点失效而非24小时',async()=>{
  const e=env();e.setNow(new Date(2026,10,1,23,59));
@@ -252,12 +322,12 @@ await test('逐站独立跳过今日成功，仅打开未完成、过期或未�
  await e.api.saveCompletion('zhiyao',{status:'already'},e.api.localDay());
  e.saved.set(prefix+'completed:ecy',{day:'2026-10-31',status:'success'});
  e.saved.set(prefix+'completed:kuku',{day:e.api.localDay(),status:'unknown'});
- const pages=batchPages(e);await e.api.scheduledTick();assert.deepEqual(pages.opened,['ecy','kuku']);assert.equal(pages.closed.length,2);e.cleanup();
+ const pages=batchPages(e);await e.api.scheduledTick();assert.deepEqual(pages.opened,enabledSites.filter(id=>id!=='zhiyao'));assert.equal(pages.closed.length,enabledSites.length-1);e.cleanup();
 });
 await test('同日重启保留成功站点，仅重新尝试失败网站',async()=>{
  const first=env(), pages=batchPages(first,id=>id==='ecy'?'login':'success');
- await assert.rejects(first.api.scheduledTick(),/1个站点未完成/);assert.equal(pages.opened.length,3);assert.equal(first.saved.has(prefix+'completed:ecy'),false);
- await first.api.scheduledTick();assert.equal(pages.opened.length,3);
+ await assert.rejects(first.api.scheduledTick(),/1个站点未完成/);assert.equal(pages.opened.length,enabledSites.length);assert.equal(first.saved.has(prefix+'completed:ecy'),false);
+ await first.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);
  const second=env('zhiyaoapi.top','/dashboard',first.saved), retry=batchPages(second);
  await second.api.scheduledTick();assert.deepEqual(retry.opened,['ecy']);first.cleanup();second.cleanup();
 });
@@ -268,8 +338,8 @@ await test('所有站点今日成功时重启不打开页面也不弹批量通�
 });
 await test('同会话跨日重新检查各站，跨月跨年及休眠恢复均适用',async()=>{
  for(const [before,after] of [[new Date(2026,10,1,23,59),new Date(2026,10,2,0,0)],[new Date(2026,10,30,23,59),new Date(2026,11,1,0,0)],[new Date(2026,11,31,23,59),new Date(2027,0,1,9,0)]]) {
-  const e=env();e.setNow(before);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,3);
-  e.setNow(after);await e.api.scheduledTick();assert.equal(pages.opened.length,6);e.cleanup();
+  const e=env();e.setNow(before);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);
+  e.setNow(after);await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length*2);e.cleanup();
  }
 });
 await test('页面已签缓存拦截重复请求，次日重新访问后查询官网',async()=>{
@@ -291,27 +361,27 @@ await test('请求跨过零点不把前一日结果写成新一日成功',async(
  await e.api.run();assert.equal(e.api.localDay(),'2026-11-02');assert.equal(await e.api.completedToday('zhiyao'),false);e.cleanup();
 });
 await test('关闭自动调度不影响手动批量运行，重新启用会补做当天检查',async()=>{
- const e=env();e.saved.set('schedule.enabled',false);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,0);await e.api.runBatch();assert.equal(pages.opened.length,3);
- e.saved.set('schedule.enabled',true);await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
+ const e=env();e.saved.set('schedule.enabled',false);const pages=batchPages(e);await e.api.scheduledTick();assert.equal(pages.opened.length,0);await e.api.runBatch();assert.equal(pages.opened.length,enabledSites.length);
+ e.saved.set('schedule.enabled',true);await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);e.cleanup();
 });
 await test('尚有批次运行时稍后检查，防止启动遗留锁阻止当天签到',async()=>{
  const e=env();e.saved.set(prefix+'batchLock',{token:'previous',at:e.sandbox.Date.now()});const pages=batchPages(e);
  await assert.rejects(e.api.scheduledTick(),/已有批量/);assert.equal(pages.opened.length,0);
- e.advance(360001);await e.api.scheduledTick();assert.equal(pages.opened.length,3);e.cleanup();
+ e.advance(360001);await e.api.scheduledTick();assert.equal(pages.opened.length,enabledSites.length);e.cleanup();
 });
 await test('并发启动检查复用同一批次',async()=>{
- const e=env();const pages=batchPages(e);await Promise.all([e.api.scheduledTick(),e.api.scheduledTick()]);assert.equal(pages.opened.length,3);e.cleanup();
+ const e=env();const pages=batchPages(e);await Promise.all([e.api.scheduledTick(),e.api.scheduledTick()]);assert.equal(pages.opened.length,enabledSites.length);e.cleanup();
 });
 await test('生成的后台脚本启动立即执行，循环检查跨日且失败后继续存活',async()=>{
  const e=env();e.setNow(new Date(2026,10,1,12,0));const pages=batchPages(e,id=>id==='ecy'?'login':'success');
  const waits=[];e.sandbox.setTimeout=(fn,ms)=>{waits.push({fn,ms});return waits.length};
  vm.runInContext('(function(){'+scheduler+'})()',e.sandbox);
  const settle=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmediate(resolve))};await settle();
- assert.equal(pages.opened.length,3);assert.equal(waits.length,1);assert.equal(waits[0].ms,60000);
- waits.shift().fn();await settle();assert.equal(pages.opened.length,3);
- e.setNow(new Date(2026,10,2,0,0));waits.shift().fn();await settle();assert.equal(pages.opened.length,6);assert.equal(waits.length,1);e.cleanup();
+ assert.equal(pages.opened.length,enabledSites.length);assert.equal(waits.length,1);assert.equal(waits[0].ms,60000);
+ waits.shift().fn();await settle();assert.equal(pages.opened.length,enabledSites.length);
+ e.setNow(new Date(2026,10,2,0,0));waits.shift().fn();await settle();assert.equal(pages.opened.length,enabledSites.length*2);assert.equal(waits.length,1);e.cleanup();
 });
 await test('全部停用时不打开页面',async()=>{
- const e=env();for(const id of ['zhiyao','ecy','kuku'])e.saved.set('sites.'+id,false);e.sandbox.GM_openInTab=()=>assert.fail('must not open');assert.equal(await e.api.runBatch(),'没有启用的站点');e.cleanup();
+ const e=env();for(const {id} of registry)e.saved.set('sites.'+id,false);e.sandbox.GM_openInTab=()=>assert.fail('must not open');assert.equal(await e.api.runBatch(),'没有启用的站点');e.cleanup();
 });
 await fs.writeFile('test-results/acceptance.json', JSON.stringify({passed:reports.length,total:reports.length,scope:'Offline VM acceptance scenarios; no authenticated browser execution',reports},null,2));

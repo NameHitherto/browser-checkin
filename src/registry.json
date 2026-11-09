@@ -60,5 +60,17 @@
     "defaultEnabled": true,
     "loginPaths": [],
     "loginPrefixes": []
+  },
+  {
+    "id": "hifiti",
+    "name": "HiFiTi 音乐磁场",
+    "adapter": "hifiti",
+    "url": "https://www.hifiti.com/",
+    "hosts": ["www.hifiti.com"],
+    "matches": ["https://www.hifiti.com/*"],
+    "autoPaths": ["/"],
+    "defaultEnabled": true,
+    "loginPaths": ["/user-login.htm"],
+    "loginPrefixes": []
   }
 ]

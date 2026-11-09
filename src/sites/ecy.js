@@ -1,4 +1,4 @@
-  const ECY_CLOSE_XPATH = '/html/body/main[2]/div/section/div[4]/div/div/div[2]/p/button';
+  const ECY_CLOSE_XPATH = '/html/body/main[2]/div/section/div[5]/div/div/div[2]/div/div/div/span[2]';
   const ECY_CHECKIN_XPATH = '/html/body/main[2]/div/section/div[1]/div[3]/div[1]/div[2]/div[2]/div[6]/div';
 
   function ecyAt(xpath) {

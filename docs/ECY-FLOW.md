@@ -6,7 +6,7 @@
 
 用户手动验证的顺序为关闭提示弹窗，然后点击签到入口：
 
-1. 关闭：`/html/body/main[2]/div/section/div[4]/div/div/div[2]/p/button`
+1. 关闭（2026-11-09 按用户提供的新定位更新）：`/html/body/main[2]/div/section/div[5]/div/div/div[2]/div/div/div/span[2]`
 2. 签到区域：`/html/body/main[2]/div/section/div[1]/div[3]/div[1]/div[2]/div[2]/div[6]/div`
 
 2026-10-28 实时读取官网公开 `theme/material/js/user.index.js?v=1792149483`：页面在 jQuery ready 中初始化公告并绑定 `#checkin`；签到成功后将 `#checkin-btn` 改为“今日已签到”。公告关闭后还可能接着出现 `#result` 提示。旧实现直接 POST，既未关闭提示，也因无法读取验证码开关而提前停止。
