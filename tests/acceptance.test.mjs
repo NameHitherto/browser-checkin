@@ -10,10 +10,10 @@ new Function(worker); new Function(scheduler);
 await fs.mkdir('test-results', {recursive:true});
 const reports = [];
 const prefix = 'three-sites:v1:';
-function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map()) {
+function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), values = new Map()) {
   let now = 1792854000000;
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
-  const values = new Map(), calls = [], timers = new Set();
+  const calls = [], timers = new Set();
   const elements = new Map(), xpaths = new Map(), clockJobs = [];
   function advance(ms) {
     now += ms;
@@ -31,7 +31,7 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map()) {
     Date: Clock, URL, AbortController, AbortSignal, document,
     location: { hostname:host, origin:`https://${host}`, pathname:path, href:`https://${host}${path}` },
     history: {state:null, replaceState(){}},
-    sessionStorage: {getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},
+    sessionStorage: {getItem:k=>values.get(k) ?? null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},
     localStorage: {getItem:()=> 'FAKE-TOKEN'},
     navigator: {locks: { request:async(_key, callback)=> callback() }},
     getComputedStyle:element=>({visibility:element?.style?.visibility || 'visible',display:element?.style?.display || 'block'}),
@@ -185,12 +185,14 @@ await test('ECY：签到目标缺失或禁用不点击其他控件',async()=>{
  for(const missing of [false,true]){const e=ecyUi();if(missing){e.elements.delete('#checkin');e.elements.delete('#checkin-btn');e.xpaths.delete(ecySignPath)}else e.button.disabled=true;assert.equal((await e.api.ecy()).status,'manual');assert.deepEqual(e.actions,[]);e.cleanup()}
 });
 const hifitiSignPath = '/html/body/main/div/div/div[2]/div[1]/span';
-function hifitiUi() {
- const e=env('www.hifiti.com','/'), actions=[];
+const hifitiLabelPath = '/html/body/main/div/div/div[2]/div[1]/span/div[1]';
+function hifitiUi({ path = '/', saved = new Map(), values = new Map(), withId = true } = {}) {
+ const e=env('www.hifiti.com',path,saved,values), actions=[];
  e.sandbox.document.readyState='complete';
  const button=ecyElement('签到'), label=ecyElement('签到');
- button.children.set('#sign',label);label.parentElement=button;
- e.xpaths.set(hifitiSignPath,button);e.elements.set('#sign',label);
+ if(withId){button.children.set('#sign',label);e.elements.set('#sign',label);}
+ label.parentElement=button;
+ e.xpaths.set(hifitiSignPath,button);e.xpaths.set(hifitiLabelPath,label);
  const signed=()=>{label.textContent='已签'};
  button.click=()=>{actions.push('sign');e.after(1000,signed)};
  label.click=()=>button.click();
@@ -250,6 +252,75 @@ await test('HiFiTi：关闭访问签到及访问其他页面不自动提交',asy
 await test('HiFiTi：登录重定向丢失批次标记时回传登录状态',async()=>{
  const e=env('www.hifiti.com','/user-login.htm');e.saved.set(prefix+'pending:hifiti',{token:'batch_test_hifiti',at:e.sandbox.Date.now()});await e.api.main();
  assert.equal(e.saved.get(prefix+'result:hifiti').status,'login');assert.equal(e.saved.get(prefix+'result:hifiti').token,'batch_test_hifiti');e.cleanup();
+});
+await test('HiFiTi：首页通过 span/div[1] XPath 判定已签（无 #sign 属性且 span 含统计文案）',async()=>{
+ const e=hifitiUi({withId:false});
+ e.button.textContent='签到 184505人 连续签到0天';
+ e.button.click=()=>{e.actions.push('sign');e.after(500,()=>{e.button.textContent='已签 184506人 连续签到1天';e.label.textContent='已签'})};
+ assert.equal((await e.api.run()).status,'success');assert.deepEqual(e.actions,['sign']);
+ assert.equal(await e.api.completedToday('hifiti'),true);e.cleanup();
+});
+await test('HiFiTi：点击后重定向到 sg_sign.htm 且元素为已签时判定成功',async()=>{
+ for(const withJob of [true,false]){
+  const saved=new Map(), values=new Map();
+  if(withJob)values.set(prefix+'job',JSON.stringify({token:'batch_hifiti_redirect',at:1792854000000}));
+  else saved.set('behavior.autoVisit',false);
+  const e1=hifitiUi({saved,values});
+  let navSnapshot=null;
+  e1.button.click=()=>{e1.actions.push('sign');navSnapshot=new Map(e1.values);};
+  const pendingRun=e1.api.run();
+  while(!navSnapshot)await new Promise(resolve=>setTimeout(resolve,0));
+  e1.cleanup();
+  void pendingRun;
+  assert.deepEqual(e1.actions,['sign']);
+  assert.equal(await e1.api.completedToday('hifiti'),false);
+  const e2=hifitiUi({path:'/sg_sign.htm',saved,values:navSnapshot,withId:false});
+  e2.label.textContent='已签';
+  e2.button.style.display='none';e2.label.style.display='none';
+  await e2.api.main();
+  assert.equal(e2.saved.get(prefix+'result:hifiti').status,'success');
+  assert.equal(e2.saved.get(prefix+'result:hifiti').token,withJob?'batch_hifiti_redirect':'');
+  assert.equal(await e2.api.completedToday('hifiti'),true);
+  assert.deepEqual(e2.actions,[]);
+  assert.equal(navSnapshot.has(prefix+'submitted:hifiti'),false);
+  e2.cleanup();
+ }
+});
+await test('HiFiTi：同页面内跳转到 sg_sign.htm 且元素为已签时判定成功',async()=>{
+ const e=hifitiUi({withId:false});
+ e.button.click=()=>{e.actions.push('sign');e.after(500,()=>{e.sandbox.location.pathname='/sg_sign.htm';e.label.textContent='已签'})};
+ assert.equal((await e.api.run()).status,'success');assert.deepEqual(e.actions,['sign']);
+ assert.equal(await e.api.completedToday('hifiti'),true);e.cleanup();
+});
+await test('HiFiTi：重定向到 sg_sign.htm 后仍显示签到则判定失败且不重试',async()=>{
+ const saved=new Map(), e1=hifitiUi({saved});
+ let navSnapshot=null;
+ e1.button.click=()=>{e1.actions.push('sign');navSnapshot=new Map(e1.values);};
+ const pendingRun=e1.api.run();
+ while(!navSnapshot)await new Promise(resolve=>setTimeout(resolve,0));
+ e1.cleanup();
+ void pendingRun;
+ const e2=hifitiUi({path:'/sg_sign.htm',saved,values:navSnapshot,withId:false});
+ e2.label.textContent='签到';
+ await e2.api.main();
+ assert.equal(e2.saved.get(prefix+'result:hifiti').status,'failed');
+ assert.equal(await e2.api.completedToday('hifiti'),false);
+ assert.deepEqual(e2.actions,[]);
+ e2.cleanup();
+
+ const e3=hifitiUi({withId:false});
+ e3.button.click=()=>{e3.actions.push('sign');e3.after(500,()=>{e3.sandbox.location.pathname='/sg_sign.htm';e3.label.textContent='签到'})};
+ assert.equal((await e3.api.run()).status,'failed');assert.deepEqual(e3.actions,['sign']);
+ assert.equal(await e3.api.completedToday('hifiti'),false);e3.cleanup();
+});
+await test('HiFiTi：未从首页触发提交时直接访问 sg_sign.htm 不自动签到',async()=>{
+ const e1=hifitiUi({path:'/sg_sign.htm',withId:false});
+ e1.saved.set('behavior.autoVisit',true);
+ await e1.api.main();
+ assert.deepEqual(e1.actions,[]);assert.equal(e1.saved.has(prefix+'result:hifiti'),false);
+ assert.equal((await e1.api.hifiti()).status,'manual');assert.deepEqual(e1.actions,[]);
+ e1.label.textContent='已签';
+ assert.equal((await e1.api.hifiti()).status,'already');assert.deepEqual(e1.actions,[]);e1.cleanup();
 });
 
 function signButton(text='立即签到',signed=false){const state={text,signed};return {state,get textContent(){return state.text},classList:{contains:k=>k==='is-signed'&&state.signed},getClientRects:()=>[{}],click(){},disabled:false}}

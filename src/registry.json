@@ -71,6 +71,7 @@
     "autoPaths": ["/"],
     "defaultEnabled": true,
     "loginPaths": ["/user-login.htm"],
-    "loginPrefixes": []
+    "loginPrefixes": [],
+    "confirmPaths": ["/sg_sign.htm"]
   }
 ]

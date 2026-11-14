@@ -42,10 +42,13 @@
 
 ## 发布
 
-1. 仅修改 `src/`、注册表、文档及测试；版本在 `package.json` 维护。
-2. 运行 `npm run build`、`npm test`、`npm run check`。
-3. 提交源码与 `dist/`，推送 `main`。固定的 Raw 地址立即用于后续检查更新；只有测试通过的代码应进入 `main`。
-4. 创建同版本标签和 GitHub Release，例如 `v1.1.0`。Release 用于版本记录与下载归档，订阅读取的仍是 `main/dist`。
+**版本更新自动发布原则**：以后凡是涉及脚本代码或站点适配的版本更新，在完成修改、更新版本号与文档并通过全部本地验证后，应**自动完成发布流程**（提交、推送 `main` 并推送同版本标签以触发 GitHub Release 自动发布），无需再等额外确认；仅在测试未通过、构建一致性失败、疑似包含隐私/凭证或用户明确要求暂不发布时中止。
+
+1. 仅修改 `src/`、注册表、文档及测试；在 `package.json` 提高版本号（`x.y.z`），并更新 `CHANGELOG.md`（及必要时的 `README.md`、`docs/EVIDENCE.md`）。
+2. 运行 `npm run build`、`npm test`、`npm run check`，确认构建一致性与全部测试通过，且仓库中不含凭证、个人配置或真实账号抓取数据。
+3. 提交源码、测试、文档与 `dist/`，推送 `main`。固定的 Raw 地址立即用于脚本猫后续检查更新；只有测试通过的代码应进入 `main`。
+4. 创建并推送同版本标签（例如 `git tag v1.3.1 && git push origin v1.3.1`）。推送 `v*` 标签后，`.github/workflows/release.yml` 会自动执行 `scripts/verify-release.mjs`、`npm test`、`npm run check`、生成 `SHA256SUMS.txt` 并创建对应 GitHub Release；Release 用于版本记录与下载归档，订阅读取的仍是 `main/dist`。
+5. 发布后可在 GitHub Actions / Release 确认工作流成功、资产完整（`dist/*` 与 `SHA256SUMS.txt`）。
 
 `worker.meta.js` / `scheduler.meta.js` 用于检查版本，`.user.js` 为下载内容，`checkin.user.sub.js` 为合集入口。构建器统一使用同一版本生成全部文件。修改站点或脚本清单后提高版本，脚本猫才会按检查间隔安装更新。可在脚本猫手动检查更新。
 

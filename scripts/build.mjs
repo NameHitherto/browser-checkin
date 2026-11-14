@@ -22,6 +22,7 @@ export function validateRegistry(registry) {
     if (!site.matches?.length || site.matches.some(match => !site.hosts.some(host => match.startsWith(`https://${host}/`)))) throw new Error('匹配范围必须限于本站 HTTPS 域名');
     if (!site.autoPaths?.length || site.autoPaths.some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('自动路径无效');
     for (const key of ['loginPaths','loginPrefixes']) if (!Array.isArray(site[key]) || site[key].some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('登录重定向路径无效');
+    if (site.confirmPaths !== undefined && (!Array.isArray(site.confirmPaths) || site.confirmPaths.some(p => typeof p !== 'string' || !p.startsWith('/')))) throw new Error('确认跳转路径无效');
   }
   return registry;
 }

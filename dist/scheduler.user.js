@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.3.0
+// @version      1.3.1
 // @description  浏览器启动时检查每日状态；仅打开未完成网站；跨日失效
 // @background
 // @storageName  local.namehitherto.three-sites.checkin.v1
@@ -21,7 +21,7 @@
 
 return (async () => {
   'use strict';
-  const VERSION = "1.3.0";
+  const VERSION = "1.3.1";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -103,7 +103,10 @@ return (async () => {
     "loginPaths": [
       "/user-login.htm"
     ],
-    "loginPrefixes": []
+    "loginPrefixes": [],
+    "confirmPaths": [
+      "/sg_sign.htm"
+    ]
   }
 };
   const PREFIX = 'three-sites:v1:';

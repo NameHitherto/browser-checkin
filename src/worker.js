@@ -2,6 +2,8 @@
   if (!id) return;
   const JOB_PARAM = 'sc_daily_checkin';
   const JOB_TTL = 180000;
+  const SUBMIT_TTL = 90000;
+  const SUBMIT_KEY = PREFIX + 'submitted:' + id;
   const stamp = () => new Date().toLocaleString('zh-CN', { hour12: false });
   const result = (status, message) => ({ status, message });
   const labels = { success:'签到成功', already:'今日已签', login:'需要登录', manual:'需要人工', unknown:'结果未确认', failed:'执行失败', busy:'正在执行', disabled:'已停用', enabled:'已启用' };
@@ -21,6 +23,18 @@
       const job = JSON.parse(sessionStorage.getItem(PREFIX + 'job') || 'null');
       return job && Date.now() - job.at < JOB_TTL ? job : null;
     } catch { return null; }
+  }
+  function markSubmitted() {
+    try { sessionStorage.setItem(SUBMIT_KEY, JSON.stringify({ at: Date.now(), day: localDay() })); } catch {}
+  }
+  function readSubmitted() {
+    try {
+      const entry = JSON.parse(sessionStorage.getItem(SUBMIT_KEY) || 'null');
+      return entry && Date.now() - entry.at < SUBMIT_TTL && entry.day === localDay() ? entry : null;
+    } catch { return null; }
+  }
+  function clearSubmitted() {
+    try { sessionStorage.removeItem(SUBMIT_KEY); } catch {}
   }
   let job = captureJob();
   let running = null;
@@ -89,7 +103,7 @@
     running = (async () => {
       const perform = async () => {
         if (!(await siteEnabled(id))) return publish(result('disabled', '本站已在个人配置中停用'));
-        if (await completedToday(id)) return publish(result('already', '本地已记录今日成功签到'));
+        if (await completedToday(id)) { clearSubmitted(); return publish(result('already', '本地已记录今日成功签到')); }
         show('busy', '检查当前会话及今日签到状态');
         const day = localDay();
         try {
@@ -97,7 +111,7 @@
           await saveCompletion(id, outcome, day);
           return await publish(outcome);
         }
-        catch { return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网')); }
+        catch { clearSubmitted(); return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网')); }
       };
       // Chrome Web Locks prevents simultaneous tabs submitting for this origin.
       return navigator.locks ? navigator.locks.request(PREFIX + 'submit', perform) : perform();
@@ -126,8 +140,9 @@
       const pending = await read('pending:' + id, null);
       if (pending?.token && Date.now() - pending.at < 95000) job = pending;
     }
+    const confirmTarget = Boolean(readSubmitted()) && (SITE[id].confirmPaths || []).includes(location.pathname);
     const normalTarget = SITE[id].autoPaths.includes(location.pathname);
-    if (job || (normalTarget && await setting('behavior.autoVisit', true))) await run();
+    if (job || confirmTarget || (normalTarget && await setting('behavior.autoVisit', true))) await run();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => main().catch(console.error), { once: true });
   else main().catch(console.error);

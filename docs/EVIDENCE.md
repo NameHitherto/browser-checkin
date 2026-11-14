@@ -37,3 +37,10 @@
 - ECY 关闭定位更新为 `/html/body/main[2]/div/section/div[5]/div/div/div[2]/div/div/div/span[2]`。回归场景只提供此 XPath 对应的关闭控件，不提供旧语义回退，以验证新定位确实被使用。
 - HiFiTi 默认启用以落实本次新增签到需求，复用四站统一调度和个人开关。测试覆盖异步已签、初始已签、定位回退、延迟加载、登录、验证、失败、超时、按钮不可用、禁用及登录跳转关联；未在真实脚本猫中完成新版本的账号签到验收。
 - 66 项本地测试（61 项离线行为场景、2 项全天空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过。
+
+## 1.3.1 HiFiTi 成功态与跳转确认修复（2026-11-15）
+
+- 内置只读浏览器在访客态实测 `https://www.hifiti.com/` 与 `https://www.hifiti.com/sg_sign.htm`：两页右侧边栏均包含 `<div id="start"><span id="sg_sign"><div class="font" id="sign">签到</div>...</span></div>`，其中 `/html/body/main/div/div/div[2]/div[1]/span` 为 `#sg_sign`，`/html/body/main/div/div/div[2]/div[1]/span/div[1]` 为 `#sign`；点击 `#sg_sign` 会向 `sg_sign.htm` 发起 `POST` 并跳转到 `https://www.hifiti.com/sg_sign.htm`。另观察到 `sg_sign.htm` 上的 `#start` 带有 `d-none d-xl-block` 类（`<1200px` 视口下 CSS `display: none`）。
+- 用户在真实已登录浏览器测试确认成功态为以下两者之一：1）重定向到 `https://www.hifiti.com/sg_sign.htm` 且 `/html/body/main/div/div/div[2]/div[1]/span/div[1]` 文字为“已签”（失败为“签到”）；2）首页 `/` 的 `/html/body/main/div/div/div[2]/div[1]/span/div[1]` 文字为“已签”（正常为“签到”）。
+- 修复将 `HIFITI_LABEL_XPATH`（`/html/body/main/div/div/div[2]/div[1]/span/div[1]`）作为首页与跳转页的优先状态读取目标（保留 `#sign` 回退），在点击前通过 `sessionStorage` 写入同会话提交标记，配合 `registry.json` 的 `confirmPaths: ["/sg_sign.htm"]` 支持重定向后的结果确认；未先从首页提交而直接访问 `sg_sign.htm` 时不自动点击。
+- 71 项本地测试（66 项离线行为场景、2 项全天空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；因本机真实浏览器凭证不可由代理直接访问，未在真实脚本猫登录会话中由代理直接执行签到端到端验收。
