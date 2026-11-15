@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 页面执行器
 // @namespace    local.namehitherto.checkin
-// @version      1.3.1
+// @version      1.4.0
 // @description  浏览器会话复用；可配置站点开关；官网结果复核
 // @match        https://zhiyaoapi.top/*
 // @match        https://owo.ecycloud.com/user*
@@ -20,6 +20,8 @@
 // @grant        GM_log
 // @grant        GM_notification
 // @grant        GM_registerMenuCommand
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        CAT_userConfig
 // @updateURL    https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/worker.meta.js
 // @downloadURL  https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/worker.user.js
@@ -61,14 +63,14 @@ behavior:
     default: true
 schedule:
   enabled:
-    title: 启用浏览器启动与跨日签到
+    title: 启用浏览器启动时自动签到
     type: checkbox
     default: true
 ==/UserConfig== */
 
 (() => {
   'use strict';
-  const VERSION = "1.3.1";
+  const VERSION = "1.4.0";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -87,7 +89,8 @@ schedule:
     ],
     "defaultEnabled": true,
     "loginPaths": [
-      "/"
+      "/",
+      "/login"
     ],
     "loginPrefixes": []
   },
@@ -129,7 +132,9 @@ schedule:
       "/operation/activitys/kukuPcSignAct/main/"
     ],
     "defaultEnabled": true,
-    "loginPaths": [],
+    "loginPaths": [
+      "/login"
+    ],
     "loginPrefixes": []
   },
   "hifiti": {
@@ -157,6 +162,9 @@ schedule:
   }
 };
   const PREFIX = 'three-sites:v1:';
+  const BATCH_LOCK_TTL = 30000;
+  const BATCH_HEARTBEAT_MS = 5000;
+  const BATCH_SITE_TIMEOUT = 105000;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const getValue = (key, fallback) => typeof GM === 'object' && GM.getValue
     ? GM.getValue(key, fallback) : Promise.resolve(GM_getValue(key, fallback));
@@ -170,7 +178,10 @@ schedule:
   async function siteEnabled(id) {
     if (!SITE[id]) return false;
     const value = await setting('sites.' + id, SITE[id].defaultEnabled);
-    if (typeof value !== 'boolean') throw new Error('站点开关必须是布尔值：' + id);
+    if (typeof value !== 'boolean') {
+      GM_log(`站点开关配置异常（${id}），回退默认状态`, 'warn');
+      return SITE[id].defaultEnabled;
+    }
     return value;
   }
   function localDay(date = new Date()) {
@@ -187,30 +198,115 @@ schedule:
       await write('completed:' + id, { day, status: outcome.status, at: Date.now() });
     }
   }
+  async function clearCompletion(id) {
+    await write('completed:' + id, null);
+  }
 
-  async function runBatch() {
+  async function acquireBatchLock(batchId, startup) {
+    const prior = await read('batchLock', null);
+    if (prior && Date.now() - prior.at < BATCH_LOCK_TTL) {
+      let active = true;
+      if (startup) {
+        // Recover quickly from an abnormal browser exit whose lock stopped heartbeating.
+        await sleep(BATCH_HEARTBEAT_MS + 1000);
+        const current = await read('batchLock', null);
+        if (!current || Date.now() - current.at >= BATCH_LOCK_TTL ||
+            (current.token === prior.token && current.at === prior.at)) {
+          active = false;
+        }
+      }
+      if (active) {
+        const error = new Error('已有批量签到运行，请稍后再试');
+        error.code = 'BATCH_BUSY';
+        throw error;
+      }
+    }
+    await write('batchLock', { token: batchId, at: Date.now() });
+  }
+
+  async function waitSiteOutcome(siteId, token, batchId, tab) {
+    const deadline = Date.now() + BATCH_SITE_TIMEOUT;
+    let lastHeartbeat = Date.now();
+    let tabClosedAt = null;
+    let wake = null;
+    let listenerId = null;
+    let notifiedOutcome = null;
+
+    if (tab && typeof tab === 'object' && !('onclose' in tab && tab.onclose)) {
+      try {
+        tab.onclose = () => {
+          tabClosedAt ??= Date.now();
+          wake?.();
+        };
+      } catch { /* Ignore readonly tab wrappers. */ }
+    }
+    if (typeof GM_addValueChangeListener === 'function') {
+      try {
+        listenerId = GM_addValueChangeListener(PREFIX + 'result:' + siteId, (_name, _old, next) => {
+          if (next?.token === token) {
+            notifiedOutcome = next;
+            wake?.();
+          }
+        });
+      } catch { /* Fall back to storage polling. */ }
+    }
+
+    try {
+      while (Date.now() < deadline) {
+        if (notifiedOutcome) return notifiedOutcome;
+        const latest = await read('result:' + siteId, null);
+        if (latest?.token === token) return latest;
+        if (tab?.closed) tabClosedAt ??= Date.now();
+        if (tabClosedAt !== null && Date.now() - tabClosedAt >= 1200) {
+          const finalCheck = await read('result:' + siteId, null);
+          if (finalCheck?.token === token) return finalCheck;
+          return { status: 'unknown', message: '页面已提前关闭，未收到结果；请检查官网，未自动重发' };
+        }
+        const now = Date.now();
+        if (now - lastHeartbeat >= BATCH_HEARTBEAT_MS) {
+          await write('batchLock', { token: batchId, at: now });
+          lastHeartbeat = now;
+        }
+        await new Promise(resolve => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            wake = null;
+            resolve();
+          };
+          wake = finish;
+          const timer = setTimeout(finish, 800);
+        });
+      }
+      return { status: 'unknown', message: '等待超时未收到结果：请检查页面执行器、登录和验证码，页面已保留' };
+    } finally {
+      if (listenerId !== null && typeof GM_removeValueChangeListener === 'function') {
+        try { GM_removeValueChangeListener(listenerId); } catch {}
+      }
+    }
+  }
+
+  async function runBatch(options = {}) {
+    const force = Boolean(options?.force);
+    const startup = Boolean(options?.startup);
     const sites = [];
     for (const site of Object.values(SITE)) if (await siteEnabled(site.id)) sites.push(site);
     if (!sites.length) { GM_log('没有启用的站点，未打开页面'); return '没有启用的站点'; }
-    if ((await Promise.all(sites.map(site => completedToday(site.id)))).every(Boolean)) {
+    if (!force && (await Promise.all(sites.map(site => completedToday(site.id)))).every(Boolean)) {
       GM_log('所有已启用网站今日均已完成签到');
       return '所有已启用网站今日均已完成签到';
     }
-    const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const prior = await read('batchLock', null);
-    if (prior && Date.now() - prior.at < 360000) {
-      const error = new Error('已有批量签到运行，请稍后再试');
-      error.code = 'BATCH_BUSY';
-      throw error;
-    }
-    await write('batchLock', { token: batchId, at: Date.now() });
+    const batchId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await acquireBatchLock(batchId, startup);
     const results = [];
     try {
       for (const site of sites) {
         if (!(await siteEnabled(site.id))) continue;
-        if (await completedToday(site.id)) continue;
+        if (!force && await completedToday(site.id)) continue;
         await write('batchLock', { token: batchId, at: Date.now() });
-        const token = `${batchId}_${site.id}`;
+        const token = `${force ? 'force' : 'batch'}_${batchId}_${site.id}`;
         const url = new URL(site.url);
         url.searchParams.set('sc_daily_checkin', token);
         await write('pending:' + site.id, { token, at: Date.now() });
@@ -218,14 +314,8 @@ schedule:
         let outcome;
         try {
           tab = GM_openInTab(url.href, { active: false, insert: false, setParent: false });
-          GM_log(`[${site.name}] 已打开页面，等待执行器`);
-          const deadline = Date.now() + 90000;
-          while (Date.now() < deadline) {
-            const latest = await read('result:' + site.id, null);
-            if (latest?.token === token) { outcome = latest; break; }
-            await sleep(800);
-          }
-          outcome ||= { status: 'unknown', message: '90秒未收到结果：请检查页面执行器、登录和验证码，页面已保留' };
+          GM_log(`[${site.name}] 已打开页面，等待${force ? '重新核验' : '执行器'}`);
+          outcome = await waitSiteOutcome(site.id, token, batchId, tab);
         } catch {
           outcome = { status: 'unknown', message: '打开或检查页面异常；请查看官网，未自动重发' };
         } finally { await write('pending:' + site.id, null); }
@@ -239,9 +329,9 @@ schedule:
       const failures = results.filter(row => !['success', 'already', 'disabled'].includes(row.status));
       const labels = { success: '签到成功', already: '今日已签', login: '需要登录', manual: '需要人工', disabled: '已停用' };
       const summary = results.map(row => `${row.name}：${labels[row.status] || '未完成'}`).join('\n');
-      await write('batchLast', { at: Date.now(), results });
+      await write('batchLast', { at: Date.now(), force, results });
       if (results.length && await setting('behavior.notifications', true)) {
-        try { GM_notification({ title: '网页签到结果', text: summary, timeout: 12000 }); } catch { /* Logs remain available. */ }
+        try { GM_notification({ title: force ? '全站核验签到结果' : '网页签到结果', text: summary, timeout: 12000 }); } catch { /* Logs remain available. */ }
       }
       if (failures.length) throw new Error(`${failures.length}个站点未完成，页面已保留；请查看运行日志`);
       return summary;
@@ -250,30 +340,10 @@ schedule:
       if (lock?.token === batchId) await write('batchLock', null);
     }
   }
-
-  let checkedDay = null;
-  let checking = null;
-  async function scheduledTick() {
-    if (checking) return checking;
-    const day = localDay();
-    if (checkedDay === day) return '本次浏览器会话今日已检查';
-    // The usual idle path above never crosses the extension storage boundary.
-    if (!(await setting('schedule.enabled', true))) return '自动调度已关闭';
-    // Recheck after the asynchronous settings read to coalesce concurrent calls.
-    if (checking) return checking;
-    if (checkedDay === day) return '本次浏览器会话今日已检查';
-    // Session-only attempt guard: failures retry on restart, not every minute.
-    checkedDay = day;
-    checking = runBatch().catch(error => {
-      if (error.code === 'BATCH_BUSY') checkedDay = null;
-      throw error;
-    }).finally(() => { checking = null; });
-    return checking;
-  }
   const id = Object.keys(SITE).find(key => SITE[key].hosts.includes(location.hostname));
   if (!id) return;
   const JOB_PARAM = 'sc_daily_checkin';
-  const JOB_TTL = 180000;
+  const JOB_TTL = 220000;
   const SUBMIT_TTL = 90000;
   const SUBMIT_KEY = PREFIX + 'submitted:' + id;
   const stamp = () => new Date().toLocaleString('zh-CN', { hour12: false });
@@ -286,7 +356,7 @@ schedule:
       const url = new URL(location.href);
       const token = url.searchParams.get(JOB_PARAM);
       if (token && /^[a-zA-Z0-9_-]{8,100}$/.test(token)) {
-        const job = { token, at: Date.now() };
+        const job = { token, force: token.startsWith('force_'), at: Date.now() };
         sessionStorage.setItem(PREFIX + 'job', JSON.stringify(job));
         url.searchParams.delete(JOB_PARAM);
         history.replaceState(history.state, '', url.href);
@@ -317,11 +387,14 @@ schedule:
     if (!badge) {
       badge = document.createElement('div');
       badge.id = 'sc-three-sites-status';
+      badge.title = '点击关闭提示';
       Object.assign(badge.style, {
         position: 'fixed', bottom: '18px', right: '18px', zIndex: '2147483647',
         background: '#142235', color: '#fff', padding: '12px 16px', borderRadius: '10px',
         font: '13px/1.6 system-ui,sans-serif', maxWidth: '350px', boxShadow: '0 4px 18px #0004',
+        cursor: 'pointer',
       });
+      badge.onclick = () => { try { badge.remove?.(); badge = null; } catch {} };
       document.body.appendChild(badge);
     }
     badge.textContent = `${SITE[id].name} · ${labels[status] || status}：${message}`;
@@ -395,10 +468,10 @@ schedule:
   function ecyVisible(element) {
     if (!element || element.hidden || !element.getClientRects().length) return false;
     const style = getComputedStyle(element);
-    return style.visibility !== 'hidden' && style.display !== 'none';
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   }
   function ecyAlready() {
-    return [document.querySelector('#checkin-btn'), ecyAt(ECY_CHECKIN_XPATH)].some(area =>
+    return [document.querySelector('#checkin-btn'), ecyAt(ECY_CHECKIN_XPATH), document.querySelector('#checkin')].some(area =>
       ecyVisible(area) && /今日已签到|今日已簽到|Checked-?in-?today/i.test(normalize(area.textContent)));
   }
   function ecyButton() {
@@ -500,11 +573,13 @@ schedule:
     return result('unknown', '仅点击一次官网签到，未确认结果；请查看保留页面，未自动重试');
   }
 
-  function visible(element) {
-    return !!element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+  function kukuVisible(element) {
+    if (!element || element.hidden || !element.getClientRects().length) return false;
+    const style = getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   }
   function kukuButton() {
-    return Array.from(document.querySelectorAll('button.pc-sign-btn')).find(visible);
+    return Array.from(document.querySelectorAll('button.pc-sign-btn')).find(kukuVisible);
   }
   function kukuState(button) {
     const text = normalize(button?.textContent);
@@ -662,8 +737,9 @@ schedule:
       return hifitiConfirmRedirect();
     }
     clearSubmitted();
-    const initialIssue = hifitiIssue(false);
-    if (initialIssue) return initialIssue;
+    if (/^\/user-login(?:\.htm)?\/?$/.test(location.pathname)) {
+      return result('login', '请在 HiFiTi 手动登录后重新运行');
+    }
     if (location.pathname !== '/') return result('manual', '请打开 HiFiTi 首页后再签到');
     const loadDeadline = Date.now() + 35000;
     let readySince = null;
@@ -715,20 +791,31 @@ schedule:
 
   const ADAPTERS = {"zhiyao":zhiyao,"ecy":ecy,"kuku":kuku,"hifiti":hifiti};
 
-  async function run() {
+  async function run(options = {}) {
+    const force = Boolean(options?.force || job?.force || job?.token?.startsWith('force_'));
     if (running) return running;
     running = (async () => {
       const perform = async () => {
         if (!(await siteEnabled(id))) return publish(result('disabled', '本站已在个人配置中停用'));
-        if (await completedToday(id)) { clearSubmitted(); return publish(result('already', '本地已记录今日成功签到')); }
-        show('busy', '检查当前会话及今日签到状态');
+        if (!force && await completedToday(id)) {
+          clearSubmitted();
+          return publish(result('already', '本地已记录今日成功签到'));
+        }
+        show('busy', force ? '正在重新核验当前页面及今日签到状态' : '检查当前会话及今日签到状态');
         const day = localDay();
         try {
           const outcome = await ADAPTERS[id]();
-          await saveCompletion(id, outcome, day);
+          if (['success', 'already'].includes(outcome.status)) {
+            await saveCompletion(id, outcome, day);
+          } else if (force && ['login', 'failed', 'manual'].includes(outcome.status)) {
+            await clearCompletion(id);
+          }
           return await publish(outcome);
+        } catch (error) {
+          clearSubmitted();
+          console.warn('[三站签到]', SITE[id].name, error?.name || 'Error');
+          return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网'));
         }
-        catch { clearSubmitted(); return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网')); }
       };
       // Chrome Web Locks prevents simultaneous tabs submitting for this origin.
       return navigator.locks ? navigator.locks.request(PREFIX + 'submit', perform) : perform();
@@ -742,20 +829,39 @@ schedule:
     url.searchParams.set(JOB_PARAM, `manual_${Date.now()}_${site}`);
     return GM_openInTab(url.href, { active: true, insert: false, setParent: false });
   }
+
+  async function requestManualBatch() {
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    show('busy', '正在请求后台启动全站重新核验');
+    await write('manualRequest', { id: requestId, at: Date.now() });
+    for (let i = 0; i < 4; i++) {
+      await sleep(150);
+      const ack = await read('manualAck', null);
+      if (ack?.id === requestId) {
+        show('busy', '已交由后台脚本执行全站重新核验，关闭本页不会中断');
+        return '已交由后台脚本执行';
+      }
+    }
+    return runBatch({ force: true, startup: false });
+  }
+
   async function main() {
-    GM_registerMenuCommand('本站：检查并签到', run);
+    GM_registerMenuCommand('本站：检查并签到', () => run({ force: true }));
     GM_registerMenuCommand('打开本站签到页', () => openSite(id));
-    GM_registerMenuCommand('全部已启用网站：立即签到', () => runBatch().catch(() => show('failed', '部分网站未完成，请查看保留页面和运行日志')));
+    GM_registerMenuCommand('全部已启用网站：立即重新核验并签到', () =>
+      requestManualBatch().catch(error => show('failed', error?.message || '部分网站未完成，请查看保留页面和运行日志')));
     GM_registerMenuCommand('启用 / 停用本站', async () => {
       const enabled = !(await siteEnabled(id));
       await setSetting('sites.' + id, enabled);
-      show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和定时均不再提交');
+      show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和启动检查均不再提交');
     });
     GM_registerMenuCommand('站点与启动设置', () => CAT_userConfig());
     // A server-side login redirect may discard the URL marker before document-start.
     if (!job && (SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
       const pending = await read('pending:' + id, null);
-      if (pending?.token && Date.now() - pending.at < 95000) job = pending;
+      if (pending?.token && Date.now() - pending.at < 110000) {
+        job = { ...pending, force: pending.token.startsWith('force_') };
+      }
     }
     const confirmTarget = Boolean(readSubmitted()) && (SITE[id].confirmPaths || []).includes(location.pathname);
     const normalTarget = SITE[id].autoPaths.includes(location.pathname);

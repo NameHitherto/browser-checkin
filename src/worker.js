@@ -1,7 +1,7 @@
   const id = Object.keys(SITE).find(key => SITE[key].hosts.includes(location.hostname));
   if (!id) return;
   const JOB_PARAM = 'sc_daily_checkin';
-  const JOB_TTL = 180000;
+  const JOB_TTL = 220000;
   const SUBMIT_TTL = 90000;
   const SUBMIT_KEY = PREFIX + 'submitted:' + id;
   const stamp = () => new Date().toLocaleString('zh-CN', { hour12: false });
@@ -14,7 +14,7 @@
       const url = new URL(location.href);
       const token = url.searchParams.get(JOB_PARAM);
       if (token && /^[a-zA-Z0-9_-]{8,100}$/.test(token)) {
-        const job = { token, at: Date.now() };
+        const job = { token, force: token.startsWith('force_'), at: Date.now() };
         sessionStorage.setItem(PREFIX + 'job', JSON.stringify(job));
         url.searchParams.delete(JOB_PARAM);
         history.replaceState(history.state, '', url.href);
@@ -45,11 +45,14 @@
     if (!badge) {
       badge = document.createElement('div');
       badge.id = 'sc-three-sites-status';
+      badge.title = '点击关闭提示';
       Object.assign(badge.style, {
         position: 'fixed', bottom: '18px', right: '18px', zIndex: '2147483647',
         background: '#142235', color: '#fff', padding: '12px 16px', borderRadius: '10px',
         font: '13px/1.6 system-ui,sans-serif', maxWidth: '350px', boxShadow: '0 4px 18px #0004',
+        cursor: 'pointer',
       });
+      badge.onclick = () => { try { badge.remove?.(); badge = null; } catch {} };
       document.body.appendChild(badge);
     }
     badge.textContent = `${SITE[id].name} · ${labels[status] || status}：${message}`;
@@ -98,20 +101,31 @@
 
 
 /* ADAPTERS */
-  async function run() {
+  async function run(options = {}) {
+    const force = Boolean(options?.force || job?.force || job?.token?.startsWith('force_'));
     if (running) return running;
     running = (async () => {
       const perform = async () => {
         if (!(await siteEnabled(id))) return publish(result('disabled', '本站已在个人配置中停用'));
-        if (await completedToday(id)) { clearSubmitted(); return publish(result('already', '本地已记录今日成功签到')); }
-        show('busy', '检查当前会话及今日签到状态');
+        if (!force && await completedToday(id)) {
+          clearSubmitted();
+          return publish(result('already', '本地已记录今日成功签到'));
+        }
+        show('busy', force ? '正在重新核验当前页面及今日签到状态' : '检查当前会话及今日签到状态');
         const day = localDay();
         try {
           const outcome = await ADAPTERS[id]();
-          await saveCompletion(id, outcome, day);
+          if (['success', 'already'].includes(outcome.status)) {
+            await saveCompletion(id, outcome, day);
+          } else if (force && ['login', 'failed', 'manual'].includes(outcome.status)) {
+            await clearCompletion(id);
+          }
           return await publish(outcome);
+        } catch (error) {
+          clearSubmitted();
+          console.warn('[三站签到]', SITE[id].name, error?.name || 'Error');
+          return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网'));
         }
-        catch { clearSubmitted(); return publish(result('unknown', '请求超时或脚本执行异常；未自动重发，请检查官网')); }
       };
       // Chrome Web Locks prevents simultaneous tabs submitting for this origin.
       return navigator.locks ? navigator.locks.request(PREFIX + 'submit', perform) : perform();
@@ -125,20 +139,39 @@
     url.searchParams.set(JOB_PARAM, `manual_${Date.now()}_${site}`);
     return GM_openInTab(url.href, { active: true, insert: false, setParent: false });
   }
+
+  async function requestManualBatch() {
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    show('busy', '正在请求后台启动全站重新核验');
+    await write('manualRequest', { id: requestId, at: Date.now() });
+    for (let i = 0; i < 4; i++) {
+      await sleep(150);
+      const ack = await read('manualAck', null);
+      if (ack?.id === requestId) {
+        show('busy', '已交由后台脚本执行全站重新核验，关闭本页不会中断');
+        return '已交由后台脚本执行';
+      }
+    }
+    return runBatch({ force: true, startup: false });
+  }
+
   async function main() {
-    GM_registerMenuCommand('本站：检查并签到', run);
+    GM_registerMenuCommand('本站：检查并签到', () => run({ force: true }));
     GM_registerMenuCommand('打开本站签到页', () => openSite(id));
-    GM_registerMenuCommand('全部已启用网站：立即签到', () => runBatch().catch(() => show('failed', '部分网站未完成，请查看保留页面和运行日志')));
+    GM_registerMenuCommand('全部已启用网站：立即重新核验并签到', () =>
+      requestManualBatch().catch(error => show('failed', error?.message || '部分网站未完成，请查看保留页面和运行日志')));
     GM_registerMenuCommand('启用 / 停用本站', async () => {
       const enabled = !(await siteEnabled(id));
       await setSetting('sites.' + id, enabled);
-      show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和定时均不再提交');
+      show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和启动检查均不再提交');
     });
     GM_registerMenuCommand('站点与启动设置', () => CAT_userConfig());
     // A server-side login redirect may discard the URL marker before document-start.
     if (!job && (SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
       const pending = await read('pending:' + id, null);
-      if (pending?.token && Date.now() - pending.at < 95000) job = pending;
+      if (pending?.token && Date.now() - pending.at < 110000) {
+        job = { ...pending, force: pending.token.startsWith('force_') };
+      }
     }
     const confirmTarget = Boolean(readSubmitted()) && (SITE[id].confirmPaths || []).includes(location.pathname);
     const normalTarget = SITE[id].autoPaths.includes(location.pathname);

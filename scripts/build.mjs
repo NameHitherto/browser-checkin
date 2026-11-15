@@ -43,7 +43,7 @@ behavior:
     default: true
 schedule:
   enabled:
-    title: 启用浏览器启动与跨日签到
+    title: 启用浏览器启动时自动签到
     type: checkbox
     default: true
 ==/UserConfig== */\n`;
@@ -58,8 +58,8 @@ export async function generate() {
   const home = `https://github.com/${release.owner}/${release.repository}`;
   const values = Object.fromEntries(registry.map(site => [site.id,site]));
   const common = `  const VERSION = ${JSON.stringify(pkg.version)};\n  const SITE = ${JSON.stringify(values,null,2)};\n` + await read('src/runtime.js');
-  const grants = ['GM_openInTab','GM_getValue','GM_setValue','GM.getValue','GM.setValue','GM_log','GM_notification'];
-  const header = (kind) => `// ==UserScript==\n// @name         三站签到 · ${kind === 'worker' ? '页面执行器' : '定时与一键执行'}\n// @namespace    local.namehitherto.checkin\n// @version      ${pkg.version}\n// @description  ${kind === 'worker' ? '浏览器会话复用；可配置站点开关；官网结果复核' : '浏览器启动时检查每日状态；仅打开未完成网站；跨日失效'}\n${kind === 'worker' ? registry.flatMap(site => site.matches).map(match => `// @match        ${match}\n`).join('') + '// @run-at       document-start\n// @inject-into  content\n// @noframes\n' : '// @background\n'}// @storageName  local.namehitherto.three-sites.checkin.v1\n${[...grants,...(kind==='worker'?['GM_registerMenuCommand','CAT_userConfig']:[])].map(grant=>`// @grant        ${grant}\n`).join('')}// @updateURL    ${base}/${kind}.meta.js\n// @downloadURL  ${base}/${kind}.user.js\n// @homepageURL  ${home}\n// @supportURL   ${home}/issues\n// @license      MIT\n// ==/UserScript==\n`;
+  const grants = ['GM_openInTab','GM_getValue','GM_setValue','GM.getValue','GM.setValue','GM_log','GM_notification','GM_registerMenuCommand','GM_addValueChangeListener','GM_removeValueChangeListener'];
+  const header = (kind) => `// ==UserScript==\n// @name         三站签到 · ${kind === 'worker' ? '页面执行器' : '定时与一键执行'}\n// @namespace    local.namehitherto.checkin\n// @version      ${pkg.version}\n// @description  ${kind === 'worker' ? '浏览器会话复用；可配置站点开关；官网结果复核' : '浏览器启动时检查每日状态并打开未完成网站；支持全局手动一键全站重新核验'}\n${kind === 'worker' ? registry.flatMap(site => site.matches).map(match => `// @match        ${match}\n`).join('') + '// @run-at       document-start\n// @inject-into  content\n// @noframes\n' : '// @background\n'}// @storageName  local.namehitherto.three-sites.checkin.v1\n${[...grants,...(kind==='worker'?['CAT_userConfig']:[])].map(grant=>`// @grant        ${grant}\n`).join('')}// @updateURL    ${base}/${kind}.meta.js\n// @downloadURL  ${base}/${kind}.user.js\n// @homepageURL  ${home}\n// @supportURL   ${home}/issues\n// @license      MIT\n// ==/UserScript==\n`;
   let adapters = '';
   for (const name of new Set(registry.map(site=>site.adapter))) {
     const code = await read(`src/sites/${name}.js`);
@@ -74,7 +74,7 @@ export async function generate() {
     'scheduler.user.js':header('scheduler')+'\nreturn (async () => {\n  \'use strict\';\n'+common+await read('src/scheduler.js')+'\n})();\n',
     'worker.meta.js':header('worker'),
     'scheduler.meta.js':header('scheduler'),
-    'checkin.user.sub.js':`// ==UserSubscribe==\n// @name         网页签到工具集\n// @description  实时浏览器登录态、启动检查、逐站每日状态与手动全签\n// @version      ${pkg.version}\n// @author       ${release.owner}\n// @scriptUrl    ${base}/worker.user.js\n// @scriptUrl    ${base}/scheduler.user.js\n// @homepageURL  ${home}\n// ==/UserSubscribe==\n`,
+    'checkin.user.sub.js':`// ==UserSubscribe==\n// @name         网页签到工具集\n// @description  实时浏览器登录态、启动检查、逐站每日状态与手动一键全站核验\n// @version      ${pkg.version}\n// @author       ${release.owner}\n// @scriptUrl    ${base}/worker.user.js\n// @scriptUrl    ${base}/scheduler.user.js\n// @homepageURL  ${home}\n// ==/UserSubscribe==\n`,
   };
   for (const [file,code] of Object.entries(files)) if(file.endsWith('.user.js')) new Function(code);
   return files;

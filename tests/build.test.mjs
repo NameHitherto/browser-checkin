@@ -15,7 +15,11 @@ test('构建脚本身份、存储与订阅链接保持一致', async()=>{
  }
  assert.match(files['scheduler.user.js'], /^\/\/ @background$/m);
  assert.doesNotMatch(files['scheduler.user.js'], /@crontab/);
+ assert.match(files['scheduler.user.js'], /@grant\s+GM_registerMenuCommand/);
+ assert.match(files['scheduler.user.js'], /@grant\s+GM_addValueChangeListener/);
+ assert.doesNotMatch(files['scheduler.user.js'], /scheduledTick/);
  assert.doesNotMatch(files['worker.user.js'], /每天执行时间/);
+ assert.doesNotMatch(files['worker.user.js'], /跨日签到/);
  for(const site of registry){assert.ok(files['worker.user.js'].includes(`sites`));for(const match of site.matches)assert.ok(files['worker.user.js'].includes(`@match        ${match}`));assert.ok(files['worker.user.js'].includes(`${site.id}:\n    title:`));}
 });
 test('注册表拒绝重复 id、宽泛权限和含凭据的入口',()=>{

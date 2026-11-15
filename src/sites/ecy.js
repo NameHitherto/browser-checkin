@@ -7,10 +7,10 @@
   function ecyVisible(element) {
     if (!element || element.hidden || !element.getClientRects().length) return false;
     const style = getComputedStyle(element);
-    return style.visibility !== 'hidden' && style.display !== 'none';
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   }
   function ecyAlready() {
-    return [document.querySelector('#checkin-btn'), ecyAt(ECY_CHECKIN_XPATH)].some(area =>
+    return [document.querySelector('#checkin-btn'), ecyAt(ECY_CHECKIN_XPATH), document.querySelector('#checkin')].some(area =>
       ecyVisible(area) && /今日已签到|今日已簽到|Checked-?in-?today/i.test(normalize(area.textContent)));
   }
   function ecyButton() {

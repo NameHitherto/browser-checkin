@@ -114,8 +114,9 @@
       return hifitiConfirmRedirect();
     }
     clearSubmitted();
-    const initialIssue = hifitiIssue(false);
-    if (initialIssue) return initialIssue;
+    if (/^\/user-login(?:\.htm)?\/?$/.test(location.pathname)) {
+      return result('login', '请在 HiFiTi 手动登录后重新运行');
+    }
     if (location.pathname !== '/') return result('manual', '请打开 HiFiTi 首页后再签到');
     const loadDeadline = Date.now() + 35000;
     let readySince = null;

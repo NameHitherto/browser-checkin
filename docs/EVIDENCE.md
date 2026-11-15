@@ -44,3 +44,10 @@
 - 用户在真实已登录浏览器测试确认成功态为以下两者之一：1）重定向到 `https://www.hifiti.com/sg_sign.htm` 且 `/html/body/main/div/div/div[2]/div[1]/span/div[1]` 文字为“已签”（失败为“签到”）；2）首页 `/` 的 `/html/body/main/div/div/div[2]/div[1]/span/div[1]` 文字为“已签”（正常为“签到”）。
 - 修复将 `HIFITI_LABEL_XPATH`（`/html/body/main/div/div/div[2]/div[1]/span/div[1]`）作为首页与跳转页的优先状态读取目标（保留 `#sign` 回退），在点击前通过 `sessionStorage` 写入同会话提交标记，配合 `registry.json` 的 `confirmPaths: ["/sg_sign.htm"]` 支持重定向后的结果确认；未先从首页提交而直接访问 `sg_sign.htm` 时不自动点击。
 - 71 项本地测试（66 项离线行为场景、2 项全天空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；`v1.3.1` 推送后 GitHub Actions 因账号账单限制未运行，已在本地通过 `scripts/verify-release.mjs`、`npm test`、`npm run check` 并经 `gh release create` 直接发布 Release（含 `dist/*` 与 `SHA256SUMS.txt`）。因本机真实浏览器凭证不可由代理直接访问，未在真实脚本猫登录会话中由代理直接执行签到端到端验收。
+
+## 1.4.0 触发机制重构与定时功能精简（2026-11-15）
+
+- 依据实际使用需求移除每分钟定时轮询（`scheduledTick` 与 60 秒循环定时器），后台脚本在启动单次检查后通过事件待命（零定时器、零轮询）。
+- 为手动一键执行引入强制核验令牌（`force_` 前缀）与后台菜单/跨脚本指令通道（`GM_registerMenuCommand` + `GM_addValueChangeListener`），点击一键执行时绕过 `completedToday` 缓存重新打开全部已启用注册站点并向官网实时复核，发现实际未登录/失败时清除误记状态；单站“本站：检查并签到”同步启用实时复核，被动访问 `autoVisit` 保持缓存拦截。
+- `runBatch` 引入 5 秒 `batchLock` 心跳、30 秒锁超时与启动 ~6 秒无心跳遗留锁接管、标签页提前关闭感知及 `GM_addValueChangeListener` 即时唤醒；同步修复 ECY `#checkin` 回退判重、HiFiTi 通用 `.alert` 误拦截及损坏站点开关容错。
+- 75 项本地测试（70 项离线行为场景、2 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；尚未在真实已登录 ScriptCat 实例中由代理直接执行四站端到端验收。

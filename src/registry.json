@@ -16,7 +16,8 @@
     ],
     "defaultEnabled": true,
     "loginPaths": [
-      "/"
+      "/",
+      "/login"
     ],
     "loginPrefixes": []
   },
@@ -58,7 +59,9 @@
       "/operation/activitys/kukuPcSignAct/main/"
     ],
     "defaultEnabled": true,
-    "loginPaths": [],
+    "loginPaths": [
+      "/login"
+    ],
     "loginPrefixes": []
   },
   {

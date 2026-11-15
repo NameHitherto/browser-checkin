@@ -1,8 +1,10 @@
-  function visible(element) {
-    return !!element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+  function kukuVisible(element) {
+    if (!element || element.hidden || !element.getClientRects().length) return false;
+    const style = getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   }
   function kukuButton() {
-    return Array.from(document.querySelectorAll('button.pc-sign-btn')).find(visible);
+    return Array.from(document.querySelectorAll('button.pc-sign-btn')).find(kukuVisible);
   }
   function kukuState(button) {
     const text = normalize(button?.textContent);
