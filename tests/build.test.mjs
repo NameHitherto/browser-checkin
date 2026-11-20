@@ -29,6 +29,10 @@ test('注册表拒绝重复 id、宽泛权限和含凭据的入口',()=>{
  assert.throws(()=>validateRegistry(mutate(x=>x[0].url='https://user:password@zhiyaoapi.top/dashboard')));
  assert.throws(()=>validateRegistry(mutate(x=>x[0].url+='?token=not-real')));
  assert.throws(()=>validateRegistry(mutate(x=>x[0].confirmPaths=['sg_sign.htm'])));
+ assert.throws(()=>validateRegistry(mutate(x=>x[0].apiOrigins=['http://api.zhiyaoapi.top'])));
+ assert.throws(()=>validateRegistry(mutate(x=>x[0].apiOrigins=['https://api.zhiyaoapi.top/v1'])));
+ assert.throws(()=>validateRegistry(mutate(x=>x[0].apiOrigins=['https://api.other.invalid'])));
+ assert.doesNotThrow(()=>validateRegistry(mutate(x=>x[0].apiOrigins=['https://api.zhiyaoapi.top'])));
 });
 test('站点删除后无需保留不存在的适配器或域名',()=>{
  const reduced=registry.filter(site=>site.id!=='ecy');assert.equal(validateRegistry(reduced).length,registry.length-1);assert.ok(!reduced.some(site=>site.hosts.includes('owo.ecycloud.com')));

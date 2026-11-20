@@ -76,5 +76,27 @@
     "loginPaths": ["/user-login.htm"],
     "loginPrefixes": [],
     "confirmPaths": ["/sg_sign.htm"]
+  },
+  {
+    "id": "kurobbs",
+    "name": "库街区 · 鸣潮",
+    "adapter": "kurobbs",
+    "url": "https://www.kurobbs.com/mc/home/9",
+    "hosts": [
+      "www.kurobbs.com"
+    ],
+    "matches": [
+      "https://www.kurobbs.com/*"
+    ],
+    "apiOrigins": [
+      "https://api.kurobbs.com"
+    ],
+    "autoPaths": [
+      "/mc/home/9",
+      "/mc/home/9/"
+    ],
+    "defaultEnabled": true,
+    "loginPaths": [],
+    "loginPrefixes": []
   }
 ]

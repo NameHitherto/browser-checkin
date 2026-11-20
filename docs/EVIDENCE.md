@@ -51,3 +51,9 @@
 - 为手动一键执行引入强制核验令牌（`force_` 前缀）与后台菜单/跨脚本指令通道（`GM_registerMenuCommand` + `GM_addValueChangeListener`），点击一键执行时绕过 `completedToday` 缓存重新打开全部已启用注册站点并向官网实时复核，发现实际未登录/失败时清除误记状态；单站“本站：检查并签到”同步启用实时复核，被动访问 `autoVisit` 保持缓存拦截。
 - `runBatch` 引入 5 秒 `batchLock` 心跳、30 秒锁超时与启动 ~6 秒无心跳遗留锁接管、标签页提前关闭感知及 `GM_addValueChangeListener` 即时唤醒；同步修复 ECY `#checkin` 回退判重、HiFiTi 通用 `.alert` 误拦截及损坏站点开关容错。
 - 75 项本地测试（70 项离线行为场景、2 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；尚未在真实已登录 ScriptCat 实例中由代理直接执行四站端到端验收。
+
+## 1.5.0 库街区 · 鸣潮游戏签到接入（2026-11-20）
+
+- 核对官方前端资源：`https://web-static.kurobbs.com/events2.0/assets/index-b450023e.js`、`web-5912510f.js` 与 `https://web-static.kurobbs.com/resource/prod/assets/index-DbxcGYMV.js`。确认官方活动页 `/mc-month-sign/home` 在非 App 环境下自动重定向至 `/mc-month-sign/web` 下载引导页；官方接口为 `POST /encourage/signIn/initSignInV2` 与 `POST /encourage/signIn/v2`（`reqMonth` 取 `eventStartTimes.slice(5, 7)`，业务码 `220`/`230` 表示登录过期）；官网在 `www.kurobbs.com` 的 `localStorage` 维护 `auth_token`、`auth`、`dc`（32 位 `DEV_CODE`）与 `distinct_id`。
+- 在真实已登录 Chrome 的 `https://www.kurobbs.com/mc/home/9` 页面上下文中通过原生 `fetch` 实测 `https://api.kurobbs.com`：预检 `OPTIONS` 返回 `200` 且显式放行 `access-control-allow-origin: https://www.kurobbs.com` 与 `access-control-allow-headers: devcode, distinct_id, source, token`；`POST /gamer/role/list`（`gameId=3`）与 `POST /encourage/signIn/initSignInV2` 均返回 HTTP `200` / `code: 200`（实测当日 `isSigIn: true`）；在今日已签状态下对 `POST /encourage/signIn/v2` 做一次幂等探测，`source: h5` 返回 `code: 1511`（`请勿重复签到`），对照 `source: android` 返回 `code: 220`（`登录已过期`）。用户核实无多端互顶影响，且需求范围为仅执行鸣潮游戏每日奖励签到。
+- 83 项本地测试（78 项离线行为场景、2 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；真实已登录浏览器仅完成了只读查询与已签态幂等探测，未在真实 ScriptCat 实例中完成未签到至已签到的端到端验收。

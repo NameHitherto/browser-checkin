@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.4.0
+// @version      1.5.0
 // @description  浏览器启动时检查每日状态并打开未完成网站；支持全局手动一键全站重新核验
 // @background
 // @storageName  local.namehitherto.three-sites.checkin.v1
@@ -24,7 +24,7 @@
 
 return (async () => {
   'use strict';
-  const VERSION = "1.4.0";
+  const VERSION = "1.5.0";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -113,6 +113,28 @@ return (async () => {
     "confirmPaths": [
       "/sg_sign.htm"
     ]
+  },
+  "kurobbs": {
+    "id": "kurobbs",
+    "name": "库街区 · 鸣潮",
+    "adapter": "kurobbs",
+    "url": "https://www.kurobbs.com/mc/home/9",
+    "hosts": [
+      "www.kurobbs.com"
+    ],
+    "matches": [
+      "https://www.kurobbs.com/*"
+    ],
+    "apiOrigins": [
+      "https://api.kurobbs.com"
+    ],
+    "autoPaths": [
+      "/mc/home/9",
+      "/mc/home/9/"
+    ],
+    "defaultEnabled": true,
+    "loginPaths": [],
+    "loginPrefixes": []
   }
 };
   const PREFIX = 'three-sites:v1:';

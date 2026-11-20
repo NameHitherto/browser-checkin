@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.5.0
+
+- 新增 **库街区 · 鸣潮** 游戏每日奖励签到适配器（`src/sites/kurobbs.js`），默认启用，入口为 `https://www.kurobbs.com/mc/home/9`。
+- 实时读取当前浏览器页面 `localStorage` 中的 `auth_token`、`dc` 与 `distinct_id`（不落盘、不持久化凭证），以官方同站 CORS 原生 `fetch`（`source: h5`、`credentials: omit`）完成角色查询 → 今日状态查询 → 单次游戏签到（`/encourage/signIn/v2`）→ 再次查询复核 `isSigIn === true`；不引入 `GM_xmlhttpRequest` 或 `@connect` 权限，也不执行社区签到或补签。
+- 注册表新增可选 `apiOrigins` 白名单字段并在构建校验与页面执行器 `requestJSON` 中强制校验：仅允许与站点同主域的纯 HTTPS 官方 API origin，其他站点与任意第三方域仍严格禁止跨站发送认证信息。
+- 补充 8 项库街区离线验收场景与 `apiOrigins` 构建校验测试（总计 83 项离线测试通过）。
+
 ## 1.4.0
 
 - 移除定时执行与每分钟跨日轮询逻辑（删除 `scheduledTick` 与 60 秒循环定时器），后台脚本精简为启动单次检查 + 零定时器事件待命。

@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         三站签到 · 页面执行器
 // @namespace    local.namehitherto.checkin
-// @version      1.4.0
+// @version      1.5.0
 // @description  浏览器会话复用；可配置站点开关；官网结果复核
 // @match        https://zhiyaoapi.top/*
 // @match        https://owo.ecycloud.com/user*
 // @match        https://owo.ecycloud.com/auth/*
 // @match        https://kuku.baidu.com/*
 // @match        https://www.hifiti.com/*
+// @match        https://www.kurobbs.com/*
 // @run-at       document-start
 // @inject-into  content
 // @noframes

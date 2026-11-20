@@ -70,18 +70,20 @@
 
   async function requestJSON(path, options = {}) {
     const target = new URL(path, location.origin);
-    if (target.origin !== location.origin) throw new Error('禁止向其他站点发送认证信息');
+    const allowedOrigins = [location.origin, ...(SITE[id]?.apiOrigins || [])];
+    if (!allowedOrigins.includes(target.origin)) throw new Error('禁止向其他站点发送认证信息');
+    const crossOrigin = target.origin !== location.origin;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(target.href, {
-        ...options, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+        ...options, credentials: crossOrigin ? 'omit' : 'same-origin', cache: 'no-store', signal: controller.signal,
         headers: { Accept: 'application/json', ...options.headers },
       });
       if (response.status === 401 || response.status === 403) {
         return { http: response.status, login: response.status === 401, forbidden: response.status === 403 };
       }
-      if (new URL(response.url || target.href).origin !== location.origin) return { login: true };
+      if (!allowedOrigins.includes(new URL(response.url || target.href).origin)) return { login: true };
       if (/\/auth\/login|passport\.baidu\.com/.test(response.url || '')) return { login: true };
       const text = await response.text();
       let data;

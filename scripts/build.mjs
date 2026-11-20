@@ -23,6 +23,20 @@ export function validateRegistry(registry) {
     if (!site.autoPaths?.length || site.autoPaths.some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('自动路径无效');
     for (const key of ['loginPaths','loginPrefixes']) if (!Array.isArray(site[key]) || site[key].some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('登录重定向路径无效');
     if (site.confirmPaths !== undefined && (!Array.isArray(site.confirmPaths) || site.confirmPaths.some(p => typeof p !== 'string' || !p.startsWith('/')))) throw new Error('确认跳转路径无效');
+    if (site.apiOrigins !== undefined) {
+      if (!Array.isArray(site.apiOrigins)) throw new Error('官方 API 白名单格式无效');
+      const siteDomains = site.hosts.map(host => host.split('.').slice(-2).join('.'));
+      for (const origin of site.apiOrigins) {
+        if (typeof origin !== 'string') throw new Error('官方 API 白名单仅允许 HTTPS origin');
+        const apiUrl = new URL(origin);
+        if (apiUrl.protocol !== 'https:' || apiUrl.username || apiUrl.password || apiUrl.search || apiUrl.hash || apiUrl.pathname !== '/' || origin !== apiUrl.origin) {
+          throw new Error('官方 API 白名单仅允许纯 HTTPS origin');
+        }
+        if (!/^[a-z0-9.-]+\.[a-z]+$/.test(apiUrl.hostname)) throw new Error('官方 API 白名单域名无效');
+        const apiDomain = apiUrl.hostname.split('.').slice(-2).join('.');
+        if (!siteDomains.includes(apiDomain)) throw new Error('官方 API 白名单必须属于本站同主域');
+      }
+    }
   }
   return registry;
 }

@@ -37,7 +37,7 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), val
     }
   };
   const context = {
-    Date: Clock, URL, AbortController, AbortSignal, document,
+    Date: Clock, URL, URLSearchParams, AbortController, AbortSignal, document,
     location: { hostname:host, origin:`https://${host}`, pathname:path, href:`https://${host}${path}` },
     history: {state:null, replaceState(){}},
     sessionStorage: {getItem:k=>values.get(k) ?? null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},
@@ -56,7 +56,7 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), val
     DOMParser:class {parseFromString(){return document}},
   };
   const sandbox=vm.createContext(context);
-  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, hifiti, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, requestManualBatch, localDay, completedToday, saveCompletion, clearCompletion, openSite };\n  if (document.readyState === \'loading\')');
+  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, hifiti, kurobbs, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, requestManualBatch, localDay, completedToday, saveCompletion, clearCompletion, openSite };\n  if (document.readyState === \'loading\')');
   vm.runInContext(injected,sandbox);
   const json=(data,status=200,url=`https://${host}/`) => ({status,ok:status>=200&&status<300,url,text:async()=>JSON.stringify(data)});
   return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,advance,setNow(value){now=Number(value)},after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
@@ -346,6 +346,125 @@ await test('库库：要求登录时不点击',async()=>{
 });
 await test('库库：点击后无成功状态为未知，不循环点击',async()=>{
  const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton();let clicks=0;b.click=()=>clicks++;e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'unknown');assert.equal(clicks,1);e.cleanup();
+});
+
+function kuroEnv({ path = '/mc/home/9', storage = null, saved = new Map(), values = new Map() } = {}) {
+ const store = new Map(Object.entries(storage ?? {
+  auth_token: 'FAKE-KURO-JWT',
+  dc: 'FAKE-DEV-CODE-32',
+  distinct_id: 'FAKE-DISTINCT-ID',
+  auth: JSON.stringify({ token: 'FAKE-KURO-JWT', userId: '10001' }),
+ }));
+ const e = env('www.kurobbs.com', path, saved, values);
+ e.sandbox.localStorage.getItem = key => store.has(key) ? store.get(key) : null;
+ return { ...e, store };
+}
+function kuroRole(overrides = {}) {
+ return { gameId: 3, serverId: 'fake-server', roleId: '900000001', userId: '10001', isDefault: true, ...overrides };
+}
+await test('库街区鸣潮：今日已签到只查询角色与状态，不发送签到 POST',async()=>{
+ const e=kuroEnv();
+ e.sandbox.fetch=async(url,opts)=>{
+  e.calls.push({url,opts});
+  if(url.endsWith('/gamer/role/list'))return e.json({code:200,msg:'请求成功',data:[kuroRole()]},200,url);
+  if(url.endsWith('/encourage/signIn/initSignInV2'))return e.json({code:200,msg:'请求成功',data:{isSigIn:true,eventStartTimes:'2026-11-01 00:00:00'}},200,url);
+  throw Error('must not sign');
+ };
+ assert.equal((await e.api.run()).status,'already');
+ assert.equal(e.calls.length,2);
+ assert.equal(e.calls[0].opts.headers.source,'h5');
+ assert.equal(e.calls[0].opts.headers.token,'FAKE-KURO-JWT');
+ assert.equal(e.calls[0].opts.headers.devCode,'FAKE-DEV-CODE-32');
+ assert.equal(e.calls[0].opts.credentials,'omit');
+ assert.equal(await e.api.completedToday('kurobbs'),true);
+ e.cleanup();
+});
+await test('库街区鸣潮：实时读取网页令牌，按默认角色和月份提交一次并复核已签',async()=>{
+ const e=kuroEnv();let initCalls=0;
+ e.sandbox.fetch=async(url,opts)=>{
+  e.calls.push({url,opts});
+  if(url.endsWith('/gamer/role/list'))return e.json({code:200,data:[kuroRole({roleId:'111',isDefault:false}),kuroRole({roleId:'222',isDefault:true})]},200,url);
+  if(url.endsWith('/encourage/signIn/initSignInV2'))return e.json({code:200,data:{isSigIn:++initCalls>1,eventStartTimes:'2026-11-01 00:00:00'}},200,url);
+  if(url.endsWith('/encourage/signIn/v2'))return e.json({code:200,msg:'请求成功',data:{}},200,url);
+  throw Error('unexpected '+url);
+ };
+ assert.equal((await e.api.run()).status,'success');
+ assert.equal(e.calls.length,4);
+ const submit=e.calls[2];
+ assert.ok(submit.url==='https://api.kurobbs.com/encourage/signIn/v2');
+ const body=new URLSearchParams(submit.opts.body);
+ assert.equal(body.get('gameId'),'3');
+ assert.equal(body.get('roleId'),'222');
+ assert.equal(body.get('serverId'),'fake-server');
+ assert.equal(body.get('userId'),'10001');
+ assert.equal(body.get('reqMonth'),'11');
+ assert.equal(submit.opts.headers.source,'h5');
+ assert.equal(await e.api.completedToday('kurobbs'),true);
+ const persisted=JSON.stringify([...e.saved.values()]);
+ assert.ok(!persisted.includes('FAKE-KURO-JWT')&&!persisted.includes('FAKE-DEV-CODE-32')&&!persisted.includes('222'));
+ e.cleanup();
+});
+await test('库街区鸣潮：无令牌时不发送任何请求，返回需登录',async()=>{
+ const e=kuroEnv({storage:{}});
+ assert.equal((await e.api.run()).status,'login');
+ assert.equal(e.calls.length,0);
+ assert.equal(await e.api.completedToday('kurobbs'),false);
+ e.cleanup();
+});
+await test('库街区鸣潮：业务码 220/230 登录过期停止提交且不记成功',async()=>{
+ for(const code of [220,230]){
+  const e=kuroEnv();
+  e.sandbox.fetch=async(url,opts)=>{e.calls.push({url,opts});return e.json({code,msg:'登录已过期，请重新登录'},200,url)};
+  assert.equal((await e.api.run()).status,'login');
+  assert.equal(e.calls.length,1);
+  assert.equal(await e.api.completedToday('kurobbs'),false);
+  e.cleanup();
+ }
+});
+await test('库街区鸣潮：提交返回 1511 重复签到且复核已签时记为今日已签',async()=>{
+ const e=kuroEnv();let initCalls=0;
+ e.sandbox.fetch=async(url,opts)=>{
+  e.calls.push({url,opts});
+  if(url.endsWith('/gamer/role/list'))return e.json({code:200,data:[kuroRole()]},200,url);
+  if(url.endsWith('/encourage/signIn/initSignInV2'))return e.json({code:200,data:{isSigIn:++initCalls>1,nowServerTimes:'2026-11-20 12:00:00'}},200,url);
+  if(url.endsWith('/encourage/signIn/v2'))return e.json({code:1511,msg:'请勿重复签到',success:false},200,url);
+  throw Error('unexpected '+url);
+ };
+ assert.equal((await e.api.run()).status,'already');
+ assert.equal(await e.api.completedToday('kurobbs'),true);
+ e.cleanup();
+});
+await test('库街区鸣潮：提交后复核未签、状态格式异常、未绑角色和风控均不误报成功',async()=>{
+ // Re-check still false -> unknown
+ const e1=kuroEnv();
+ e1.sandbox.fetch=async(url)=>url.endsWith('/gamer/role/list')?e1.json({code:200,data:[kuroRole()]},200,url):url.endsWith('/encourage/signIn/initSignInV2')?e1.json({code:200,data:{isSigIn:false,eventStartTimes:'2026-11-01'}},200,url):e1.json({code:200},200,url);
+ assert.equal((await e1.api.run()).status,'unknown');assert.equal(await e1.api.completedToday('kurobbs'),false);e1.cleanup();
+ // Schema changed -> unknown without sign POST
+ const e2=kuroEnv();
+ e2.sandbox.fetch=async(url,opts)=>{e2.calls.push({url,opts});return url.endsWith('/gamer/role/list')?e2.json({code:200,data:[kuroRole()]},200,url):e2.json({code:200,data:{signed:true}},200,url)};
+ assert.equal((await e2.api.kurobbs()).status,'unknown');assert.equal(e2.calls.length,2);e2.cleanup();
+ // No bound role -> manual
+ const e3=kuroEnv();
+ e3.sandbox.fetch=async(url)=>e3.json({code:200,data:[]},200,url);
+ assert.equal((await e3.api.kurobbs()).status,'manual');e3.cleanup();
+ // Risk control / captcha -> manual
+ const e4=kuroEnv();
+ e4.sandbox.fetch=async(url)=>url.endsWith('/gamer/role/list')?e4.json({code:200,data:[kuroRole()]},200,url):url.endsWith('/encourage/signIn/initSignInV2')?e4.json({code:200,data:{isSigIn:false,eventStartTimes:'2026-11-01'}},200,url):e4.json({code:5001,msg:'请完成滑动验证'},200,url);
+ assert.equal((await e4.api.kurobbs()).status,'manual');e4.cleanup();
+});
+await test('库街区鸣潮：仅允许访问白名单官方 API 域，其他站点仍严禁跨站请求',async()=>{
+ const eKuro=kuroEnv();
+ await assert.rejects(eKuro.api.requestJSON('https://other.invalid/signIn'),/禁止向其他站点/);
+ assert.equal(eKuro.calls.length,0);
+ const eZhiyao=env();
+ await assert.rejects(eZhiyao.api.requestJSON('https://api.kurobbs.com/gamer/role/list'),/禁止向其他站点/);
+ assert.equal(eZhiyao.calls.length,0);
+ eKuro.cleanup();eZhiyao.cleanup();
+});
+await test('库街区鸣潮：站点开关及非签到路径访问均按规则拦截',async()=>{
+ const e=kuroEnv();e.saved.set('sites.kurobbs',false);await e.api.main();await e.api.openSite('kurobbs');assert.equal(e.calls.length,0);
+ const eOther=kuroEnv({path:'/mc/post/123'});eOther.saved.set('behavior.autoVisit',true);await eOther.api.main();assert.equal(eOther.calls.length,0);
+ e.cleanup();eOther.cleanup();
 });
 await test('状态存储不包含认证令牌或原始响应',async()=>{
  const e=env();e.sandbox.fetch=async()=>e.json({today_checked_in:true,secret:'SHOULD-NOT-PERSIST'});await e.api.run();const saved=JSON.stringify([...e.saved.values()]);assert.ok(!saved.includes('FAKE-TOKEN'));assert.ok(!saved.includes('SHOULD-NOT-PERSIST'));e.cleanup();
