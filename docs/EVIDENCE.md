@@ -57,3 +57,9 @@
 - 核对官方前端资源：`https://web-static.kurobbs.com/events2.0/assets/index-b450023e.js`、`web-5912510f.js` 与 `https://web-static.kurobbs.com/resource/prod/assets/index-DbxcGYMV.js`。确认官方活动页 `/mc-month-sign/home` 在非 App 环境下自动重定向至 `/mc-month-sign/web` 下载引导页；官方接口为 `POST /encourage/signIn/initSignInV2` 与 `POST /encourage/signIn/v2`（`reqMonth` 取 `eventStartTimes.slice(5, 7)`，业务码 `220`/`230` 表示登录过期）；官网在 `www.kurobbs.com` 的 `localStorage` 维护 `auth_token`、`auth`、`dc`（32 位 `DEV_CODE`）与 `distinct_id`。
 - 在真实已登录 Chrome 的 `https://www.kurobbs.com/mc/home/9` 页面上下文中通过原生 `fetch` 实测 `https://api.kurobbs.com`：预检 `OPTIONS` 返回 `200` 且显式放行 `access-control-allow-origin: https://www.kurobbs.com` 与 `access-control-allow-headers: devcode, distinct_id, source, token`；`POST /gamer/role/list`（`gameId=3`）与 `POST /encourage/signIn/initSignInV2` 均返回 HTTP `200` / `code: 200`（实测当日 `isSigIn: true`）；在今日已签状态下对 `POST /encourage/signIn/v2` 做一次幂等探测，`source: h5` 返回 `code: 1511`（`请勿重复签到`），对照 `source: android` 返回 `code: 220`（`登录已过期`）。用户核实无多端互顶影响，且需求范围为仅执行鸣潮游戏每日奖励签到。
 - 83 项本地测试（78 项离线行为场景、2 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；真实已登录浏览器仅完成了只读查询与已签态幂等探测，未在真实 ScriptCat 实例中完成未签到至已签到的端到端验收。
+
+## 1.6.0 设备级本地启用开关（2026-11-23）
+
+- 依据脚本猫官方云同步机制（`scriptcat-sync.json` 跨设备同步脚本源码与启用状态，而 `GM_setValue` / `UserConfig` 仅保存在当前浏览器本地），在共享 `@storageName` 中新增 `device.enabled` 开关（默认 `false`），并在页面执行器与后台脚本的 `==UserConfig==` 及动态菜单（`GM_registerMenuCommand` / `GM_unregisterMenuCommand` + `GM_addValueChangeListener`）中同步暴露。
+- 设备开关关闭或配置异常时完全拦截启动检查、访问页面自动签到及所有单站/全站手动触发入口，且不产生存储写入或定时器；批量执行中途关闭会立即中止剩余站点打开。
+- 91 项本地测试（85 项离线行为场景、3 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；尚未在真实多设备 ScriptCat 云同步环境中由代理直接完成端到端实测。

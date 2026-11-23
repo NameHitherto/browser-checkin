@@ -10,10 +10,12 @@ new Function(worker); new Function(scheduler);
 await fs.mkdir('test-results', {recursive:true});
 const reports = [];
 const prefix = 'three-sites:v1:';
-function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), values = new Map()) {
+function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), values = new Map(), { deviceEnabled: defaultDevice = true } = {}) {
+  if (defaultDevice && !saved.has('device.enabled')) saved.set('device.enabled', true);
   let now = 1792854000000;
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
-  const calls = [], timers = new Set();
+  const calls = [], timers = new Set(), commands = new Map(), commandIds = new Map();
+  let menuSeq = 0;
   const elements = new Map(), xpaths = new Map(), clockJobs = [];
   function advance(ms) {
     now += ms;
@@ -49,17 +51,20 @@ function env(host = 'zhiyaoapi.top', path = '/dashboard', saved = new Map(), val
     GM_getValue:(k,v)=>saved.has(k)?saved.get(k):v, GM_setValue:(k,v)=>{saved.set(k,v)},
     GM_addValueChangeListener:(key,fn)=>{const id=++listenerSeq;listeners.set(id,{key,fn});return id},
     GM_removeValueChangeListener:id=>listeners.delete(id),
-    GM_registerMenuCommand(){},GM_openInTab(){},GM_log(){},GM_notification(){},
+    GM_registerMenuCommand:(name,fn)=>{const id=++menuSeq;commands.set(name,fn);commandIds.set(id,name);return id},
+    GM_unregisterMenuCommand:id=>{const name=commandIds.get(id);if(name){commands.delete(name);commandIds.delete(id)}},
+    CAT_userConfig(){},
+    GM_openInTab(){},GM_log(){},GM_notification(){},
     setTimeout:(fn,ms)=>{const t=setTimeout(()=>{timers.delete(t);advance(ms);fn()},0);timers.add(t);return t},
     clearTimeout:t=>{timers.delete(t);clearTimeout(t)},
     fetch:async(url, opts={})=>{calls.push({url,opts});throw Error('Unexpected request')},
     DOMParser:class {parseFromString(){return document}},
   };
   const sandbox=vm.createContext(context);
-  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, hifiti, kurobbs, requestJSON, run, captureJob, main, kukuState, siteEnabled, runBatch, requestManualBatch, localDay, completedToday, saveCompletion, clearCompletion, openSite };\n  if (document.readyState === \'loading\')');
+  const injected=worker.replace("  if (document.readyState === 'loading')",'  globalThis.testAPI = { zhiyao, ecy, kuku, hifiti, kurobbs, requestJSON, run, captureJob, main, kukuState, deviceEnabled, setDeviceEnabled, toggleDeviceEnabled, siteEnabled, runBatch, requestManualBatch, localDay, completedToday, saveCompletion, clearCompletion, openSite };\n  if (document.readyState === \'loading\')');
   vm.runInContext(injected,sandbox);
   const json=(data,status=200,url=`https://${host}/`) => ({status,ok:status>=200&&status<300,url,text:async()=>JSON.stringify(data)});
-  return {sandbox,api:sandbox.testAPI,calls,elements,xpaths,saved,values,json,advance,setNow(value){now=Number(value)},after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
+  return {sandbox,api:sandbox.testAPI,calls,commands,elements,xpaths,saved,values,json,advance,setNow(value){now=Number(value)},after(ms,fn){clockJobs.push({at:now+ms,fn,done:false})},cleanup(){for(const t of timers)clearTimeout(t)}};
 }
 async function test(name,fn){await nodeTest(name,async()=>{await fn();reports.push({name,passed:true})})}
 
@@ -509,8 +514,10 @@ function batchPages(e, statusFor = () => 'already') {
  return {opened,closed,tokens};
 }
 function runSchedulerIn(e) {
- const commands = new Map();
- e.sandbox.GM_registerMenuCommand = (name, fn) => commands.set(name, fn);
+ const commands = new Map(), commandIds = new Map();
+ let seq = 0;
+ e.sandbox.GM_registerMenuCommand = (name, fn) => { const id = ++seq; commands.set(name, fn); commandIds.set(id, name); return id; };
+ e.sandbox.GM_unregisterMenuCommand = id => { const name = commandIds.get(id); if (name) { commands.delete(name); commandIds.delete(id); } };
  vm.runInContext('(function(){' + scheduler + '})()', e.sandbox);
  return {
   commands,
@@ -641,5 +648,135 @@ await test('站点开关配置损坏时回退默认开关而不中断整批其�
 });
 await test('全部停用时不打开页面',async()=>{
  const e=env();for(const {id} of registry)e.saved.set('sites.'+id,false);e.sandbox.GM_openInTab=()=>assert.fail('must not open');assert.equal(await e.api.runBatch(),'没有启用的站点');e.cleanup();
+});
+await test('本设备开关默认关闭：新设备启动、访问与全部手动入口均拦截且不写状态',async()=>{
+ const e=env('zhiyaoapi.top','/dashboard',new Map(),new Map(),{deviceEnabled:false});
+ assert.equal(await e.api.deviceEnabled(),false);
+ let notified=0;
+ e.sandbox.GM_openInTab=()=>assert.fail('must not open tab on unenabled device');
+ e.sandbox.GM_notification=()=>{notified++};
+ const bg=runSchedulerIn(e);await bg.settle();
+ assert.equal(notified,0);
+ assert.equal(e.saved.size,0,'startup on unenabled device must not write storage');
+ assert.equal(typeof bg.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ assert.equal(typeof bg.commands.get('站点与启动设置'),'function');
+ // Worker main(), single-site manual run, openSite, manual batch, background manual reverify all blocked:
+ await e.api.main();
+ assert.equal(e.calls.length,0);
+ assert.equal((await e.api.run({force:true})).status,'disabled');
+ assert.equal(e.calls.length,0);
+ await e.api.openSite('zhiyao');
+ assert.equal(await e.api.requestManualBatch(),'当前设备未启用本脚本');
+ assert.equal(await e.api.runBatch({force:true}),'当前设备未启用本脚本');
+ bg.commands.get('全部已启用网站：立即重新核验并签到')();await bg.settle();
+ assert.equal(e.saved.has(prefix+'result:zhiyao'),false);
+ assert.equal(e.saved.has(prefix+'completed:zhiyao'),false);
+ assert.equal(e.saved.has(prefix+'batchLock'),false);
+ assert.equal(e.saved.has(prefix+'manualRequest'),false);
+ e.cleanup();
+});
+await test('本设备开关显式关闭或配置损坏时安全回退为停用且保留已有个人设置',async()=>{
+ for(const badValue of [false,'corrupted',123,null]){
+  const saved=new Map([['device.enabled',badValue],['sites.zhiyao',false],['behavior.autoVisit',true],['schedule.enabled',true]]);
+  const e=env('zhiyaoapi.top','/dashboard',saved,new Map(),{deviceEnabled:false});
+  e.sandbox.GM_openInTab=()=>assert.fail('must not open');
+  assert.equal(await e.api.deviceEnabled(),false);
+  const bg=runSchedulerIn(e);await bg.settle();
+  await e.api.main();
+  assert.equal((await e.api.run({force:true})).status,'disabled');
+  assert.equal(e.calls.length,0);
+  assert.equal(e.saved.get('sites.zhiyao'),false);
+  assert.equal(e.saved.get('behavior.autoVisit'),true);
+  assert.equal(e.saved.get('schedule.enabled'),true);
+  e.cleanup();
+ }
+});
+await test('后台菜单一键切换本设备开关：文案实时更新，开启后生效、关闭后立即拦截',async()=>{
+ const e=env('zhiyaoapi.top','/dashboard',new Map(),new Map(),{deviceEnabled:false});
+ const pages=batchPages(e);
+ const bg=runSchedulerIn(e);await bg.settle();
+ assert.equal(pages.opened.length,0);
+ // Toggle ON via background menu:
+ bg.commands.get('当前设备：脚本已停用（点击启用）')();await bg.settle();
+ assert.equal(e.saved.get('device.enabled'),true);
+ assert.equal(typeof bg.commands.get('当前设备：脚本已启用（点击停用）'),'function');
+ assert.equal(bg.commands.has('当前设备：脚本已停用（点击启用）'),false);
+ // Manual reverify now works:
+ bg.commands.get('全部已启用网站：立即重新核验并签到')();await bg.settle();
+ assert.deepEqual(pages.opened,enabledSites);
+ // Toggle OFF via background menu:
+ pages.opened.length=0;
+ bg.commands.get('当前设备：脚本已启用（点击停用）')();await bg.settle();
+ assert.equal(e.saved.get('device.enabled'),false);
+ assert.equal(typeof bg.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ bg.commands.get('全部已启用网站：立即重新核验并签到')();await bg.settle();
+ assert.equal(pages.opened.length,0);
+ e.cleanup();
+});
+await test('网页菜单与后台脚本跨脚本实时同步本设备开关状态',async()=>{
+ const shared=new Map(), sharedListeners=new Map();
+ let lseq=0;
+ const wireSharedStorage=targetEnv=>{
+  targetEnv.sandbox.GM.setValue=async(k,v)=>{
+   const prev=shared.get(k);shared.set(k,v);
+   for(const entry of sharedListeners.values())if(entry.key===k)entry.fn(k,prev,v,true);
+  };
+  targetEnv.sandbox.GM_addValueChangeListener=(key,fn)=>{const id=++lseq;sharedListeners.set(id,{key,fn});return id};
+  targetEnv.sandbox.GM_removeValueChangeListener=id=>sharedListeners.delete(id);
+ };
+ const workerEnv=env('zhiyaoapi.top','/dashboard',shared,new Map(),{deviceEnabled:false});
+ const bgEnv=env('zhiyaoapi.top','/dashboard',shared,new Map(),{deviceEnabled:false});
+ wireSharedStorage(workerEnv);wireSharedStorage(bgEnv);
+ await workerEnv.api.main();
+ const bg=runSchedulerIn(bgEnv);await bg.settle();
+ assert.equal(typeof workerEnv.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ assert.equal(typeof bg.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ // Toggle via worker menu:
+ await workerEnv.commands.get('当前设备：脚本已停用（点击启用）')();await bg.settle();
+ assert.equal(shared.get('device.enabled'),true);
+ assert.equal(typeof workerEnv.commands.get('当前设备：脚本已启用（点击停用）'),'function');
+ assert.equal(typeof bg.commands.get('当前设备：脚本已启用（点击停用）'),'function');
+ // Toggle off via storage (as UserConfig panel would):
+ await workerEnv.sandbox.GM.setValue('device.enabled',false);await bg.settle();
+ assert.equal(typeof workerEnv.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ assert.equal(typeof bg.commands.get('当前设备：脚本已停用（点击启用）'),'function');
+ workerEnv.cleanup();bgEnv.cleanup();
+});
+await test('批量执行中途关闭本设备开关立即中止剩余站点打开',async()=>{
+ const e=env();
+ const opened=[];
+ e.sandbox.GM_openInTab=url=>{
+  const token=new URL(url).searchParams.get('sc_daily_checkin'), id=token.split('_').at(-1);
+  opened.push(id);
+  e.sandbox.GM.setValue(prefix+'result:'+id,{token,status:'already',message:'ok'});
+  if(opened.length===1) e.sandbox.GM.setValue('device.enabled',false);
+  return {closed:false,close(){}};
+ };
+ await e.api.runBatch({force:true});
+ assert.equal(opened.length,1,'must stop opening remaining sites after device switch turned off');
+ e.cleanup();
+});
+await test('本设备停用时后台忽略网页手动核验请求，不发送确认也不打开标签页',async()=>{
+ const e=env('zhiyaoapi.top','/dashboard',new Map(),new Map(),{deviceEnabled:false});
+ e.sandbox.GM_openInTab=()=>assert.fail('must not open');
+ const bg=runSchedulerIn(e);await bg.settle();
+ await e.sandbox.GM.setValue(prefix+'manualRequest',{id:'req_disabled_test',at:e.sandbox.Date.now()});
+ await bg.settle();
+ assert.equal(e.saved.has(prefix+'manualAck'),false);
+ e.cleanup();
+});
+await test('旧版升级后保留站点与启动设置，在目标设备开启开关即可按原设置运行',async()=>{
+ const legacy=new Map([['sites.zhiyao',false],['behavior.autoVisit',true],['schedule.enabled',true]]);
+ const beforeEnable=env('zhiyaoapi.top','/dashboard',legacy,new Map(),{deviceEnabled:false});
+ beforeEnable.sandbox.GM_openInTab=()=>assert.fail('must stay off until enabled on this device');
+ const bg1=runSchedulerIn(beforeEnable);await bg1.settle();
+ assert.equal(legacy.get('sites.zhiyao'),false);
+ // User enables script on this device and restarts browser:
+ legacy.set('device.enabled',true);
+ const afterEnable=env('zhiyaoapi.top','/dashboard',legacy,new Map(),{deviceEnabled:false});
+ const pages=batchPages(afterEnable);
+ const bg2=runSchedulerIn(afterEnable);await bg2.settle();
+ assert.deepEqual(pages.opened,enabledSites.filter(id=>id!=='zhiyao'));
+ beforeEnable.cleanup();afterEnable.cleanup();
 });
 await fs.writeFile('test-results/acceptance.json', JSON.stringify({passed:reports.length,total:reports.length,scope:'Offline VM acceptance scenarios; no authenticated browser execution',reports},null,2));

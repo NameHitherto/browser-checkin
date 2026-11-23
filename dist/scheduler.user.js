@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.5.0
-// @description  浏览器启动时检查每日状态并打开未完成网站；支持全局手动一键全站重新核验
+// @version      1.6.0
+// @description  浏览器启动时检查每日状态并打开未完成网站；支持设备级本地开关与全局手动一键全站重新核验
 // @background
 // @storageName  local.namehitherto.three-sites.checkin.v1
 // @grant        GM_openInTab
@@ -13,8 +13,10 @@
 // @grant        GM_log
 // @grant        GM_notification
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        GM_addValueChangeListener
 // @grant        GM_removeValueChangeListener
+// @grant        CAT_userConfig
 // @updateURL    https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/scheduler.meta.js
 // @downloadURL  https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/scheduler.user.js
 // @homepageURL  https://github.com/NameHitherto/browser-checkin
@@ -22,9 +24,57 @@
 // @license      MIT
 // ==/UserScript==
 
+/* ==UserConfig==
+device:
+  enabled:
+    title: "在当前设备启用本脚本"
+    description: "仅保存在当前浏览器本地，不随脚本猫云同步；新设备默认关闭，需在指定设备手动开启"
+    type: checkbox
+    default: false
+sites:
+  zhiyao:
+    title: "知遥 API：启用签到"
+    type: checkbox
+    default: true
+  ecy:
+    title: "ECY Cloud：启用签到"
+    type: checkbox
+    default: true
+  kuku:
+    title: "库库 AI：启用签到"
+    type: checkbox
+    default: true
+  hifiti:
+    title: "HiFiTi 音乐磁场：启用签到"
+    type: checkbox
+    default: true
+  kurobbs:
+    title: "库街区 · 鸣潮：启用签到"
+    type: checkbox
+    default: true
+behavior:
+  autoVisit:
+    title: 访问签到页面时自动执行
+    type: checkbox
+    default: true
+  closeSuccess:
+    title: 批量执行后关闭成功的临时页面
+    type: checkbox
+    default: true
+  notifications:
+    title: 显示批量结果通知
+    type: checkbox
+    default: true
+schedule:
+  enabled:
+    title: 启用浏览器启动时自动签到
+    type: checkbox
+    default: true
+==/UserConfig== */
+
 return (async () => {
   'use strict';
-  const VERSION = "1.5.0";
+  const VERSION = "1.6.0";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -151,6 +201,47 @@ return (async () => {
   const setting = (key, fallback) => getValue(key, fallback);
   const setSetting = setValue;
 
+  const DEVICE_ENABLED_KEY = 'device.enabled';
+  async function deviceEnabled() {
+    const value = await setting(DEVICE_ENABLED_KEY, false);
+    if (typeof value !== 'boolean') {
+      GM_log('本设备启用开关配置异常，已安全回退为停用', 'warn');
+      return false;
+    }
+    return value;
+  }
+  async function setDeviceEnabled(enabled) {
+    const next = Boolean(enabled);
+    await setSetting(DEVICE_ENABLED_KEY, next);
+    return next;
+  }
+  function setupDeviceMenu(onToggle) {
+    let menuId = null;
+    let seq = 0;
+    const refresh = async () => {
+      if (typeof GM_registerMenuCommand !== 'function') return;
+      const current = ++seq;
+      const enabled = await deviceEnabled();
+      if (current !== seq) return;
+      if (menuId != null && typeof GM_unregisterMenuCommand === 'function') {
+        try { GM_unregisterMenuCommand(menuId); } catch {}
+      }
+      menuId = GM_registerMenuCommand(
+        enabled ? '当前设备：脚本已启用（点击停用）' : '当前设备：脚本已停用（点击启用）',
+        () => Promise.resolve(onToggle()).catch(error => GM_log(error?.message || '切换本设备开关失败', 'warn')),
+        { id: 'device-enabled-toggle' }
+      );
+    };
+    if (typeof GM_addValueChangeListener === 'function') {
+      try {
+        GM_addValueChangeListener(DEVICE_ENABLED_KEY, () => {
+          refresh().catch(() => {});
+        });
+      } catch {}
+    }
+    return refresh;
+  }
+
   async function siteEnabled(id) {
     if (!SITE[id]) return false;
     const value = await setting('sites.' + id, SITE[id].defaultEnabled);
@@ -265,6 +356,10 @@ return (async () => {
   }
 
   async function runBatch(options = {}) {
+    if (!(await deviceEnabled())) {
+      GM_log('当前设备未启用本脚本，已跳过批量执行');
+      return '当前设备未启用本脚本';
+    }
     const force = Boolean(options?.force);
     const startup = Boolean(options?.startup);
     const sites = [];
@@ -279,6 +374,10 @@ return (async () => {
     const results = [];
     try {
       for (const site of sites) {
+        if (!(await deviceEnabled())) {
+          GM_log('当前设备已停用本脚本，中止剩余站点');
+          break;
+        }
         if (!(await siteEnabled(site.id))) continue;
         if (!force && await completedToday(site.id)) continue;
         await write('batchLock', { token: batchId, at: Date.now() });
@@ -333,17 +432,27 @@ return (async () => {
   }
 
   async function startupCheck() {
+    if (!(await deviceEnabled())) return '当前设备未启用本脚本';
     if (!(await setting('schedule.enabled', true))) return '启动自动签到已关闭';
     return runManaged({ force: false, startup: true });
   }
 
   async function manualReverify() {
+    if (!(await deviceEnabled())) {
+      const msg = '当前设备未启用本脚本，请先在菜单或设置中启用';
+      GM_log(msg, 'warn');
+      if (await setting('behavior.notifications', true)) {
+        try { GM_notification({ title: '网页签到工具集 · 本设备未启用', text: msg, timeout: 6000 }); } catch {}
+      }
+      return msg;
+    }
     return runManaged({ force: true, startup: false });
   }
 
   async function handleManualRequest(request) {
     if (!request?.id || request.id === lastRequestId) return;
     if (Date.now() - Number(request.at || 0) > 15000) return;
+    if (!(await deviceEnabled())) return;
     lastRequestId = request.id;
     await write('manualAck', { id: request.id, at: Date.now() });
     try {
@@ -353,10 +462,30 @@ return (async () => {
     }
   }
 
+  let refreshDeviceMenu = null;
+  async function toggleDeviceEnabled() {
+    const next = await setDeviceEnabled(!(await deviceEnabled()));
+    if (refreshDeviceMenu) await refreshDeviceMenu();
+    const msg = next
+      ? '当前设备已启用脚本（仅影响本设备，不同步到其他设备）'
+      : '当前设备已停用脚本（仅影响本设备，不同步到其他设备）';
+    GM_log(msg);
+    if (await setting('behavior.notifications', true)) {
+      try { GM_notification({ title: '网页签到工具集 · 本设备开关', text: msg, timeout: 6000 }); } catch {}
+    }
+    return next;
+  }
+
+  refreshDeviceMenu = setupDeviceMenu(toggleDeviceEnabled);
+  refreshDeviceMenu().catch(error => GM_log(error?.message || '初始化本设备开关菜单失败', 'warn'));
+
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('全部已启用网站：立即重新核验并签到', () => {
       manualReverify().catch(error => GM_log(error.message || '全站重新核验未完成，请查看保留页面', 'warn'));
     });
+    if (typeof CAT_userConfig === 'function') {
+      GM_registerMenuCommand('站点与启动设置', () => CAT_userConfig());
+    }
   }
 
   if (typeof GM_addValueChangeListener === 'function') {

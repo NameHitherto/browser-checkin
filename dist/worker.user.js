@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         三站签到 · 页面执行器
 // @namespace    local.namehitherto.checkin
-// @version      1.5.0
-// @description  浏览器会话复用；可配置站点开关；官网结果复核
+// @version      1.6.0
+// @description  浏览器会话复用；设备级本地开关；可配置站点开关；官网结果复核
 // @match        https://zhiyaoapi.top/*
 // @match        https://owo.ecycloud.com/user*
 // @match        https://owo.ecycloud.com/auth/*
@@ -21,6 +21,7 @@
 // @grant        GM_log
 // @grant        GM_notification
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        GM_addValueChangeListener
 // @grant        GM_removeValueChangeListener
 // @grant        CAT_userConfig
@@ -32,6 +33,12 @@
 // ==/UserScript==
 
 /* ==UserConfig==
+device:
+  enabled:
+    title: "在当前设备启用本脚本"
+    description: "仅保存在当前浏览器本地，不随脚本猫云同步；新设备默认关闭，需在指定设备手动开启"
+    type: checkbox
+    default: false
 sites:
   zhiyao:
     title: "知遥 API：启用签到"
@@ -75,7 +82,7 @@ schedule:
 
 (() => {
   'use strict';
-  const VERSION = "1.5.0";
+  const VERSION = "1.6.0";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -202,6 +209,47 @@ schedule:
   const setting = (key, fallback) => getValue(key, fallback);
   const setSetting = setValue;
 
+  const DEVICE_ENABLED_KEY = 'device.enabled';
+  async function deviceEnabled() {
+    const value = await setting(DEVICE_ENABLED_KEY, false);
+    if (typeof value !== 'boolean') {
+      GM_log('本设备启用开关配置异常，已安全回退为停用', 'warn');
+      return false;
+    }
+    return value;
+  }
+  async function setDeviceEnabled(enabled) {
+    const next = Boolean(enabled);
+    await setSetting(DEVICE_ENABLED_KEY, next);
+    return next;
+  }
+  function setupDeviceMenu(onToggle) {
+    let menuId = null;
+    let seq = 0;
+    const refresh = async () => {
+      if (typeof GM_registerMenuCommand !== 'function') return;
+      const current = ++seq;
+      const enabled = await deviceEnabled();
+      if (current !== seq) return;
+      if (menuId != null && typeof GM_unregisterMenuCommand === 'function') {
+        try { GM_unregisterMenuCommand(menuId); } catch {}
+      }
+      menuId = GM_registerMenuCommand(
+        enabled ? '当前设备：脚本已启用（点击停用）' : '当前设备：脚本已停用（点击启用）',
+        () => Promise.resolve(onToggle()).catch(error => GM_log(error?.message || '切换本设备开关失败', 'warn')),
+        { id: 'device-enabled-toggle' }
+      );
+    };
+    if (typeof GM_addValueChangeListener === 'function') {
+      try {
+        GM_addValueChangeListener(DEVICE_ENABLED_KEY, () => {
+          refresh().catch(() => {});
+        });
+      } catch {}
+    }
+    return refresh;
+  }
+
   async function siteEnabled(id) {
     if (!SITE[id]) return false;
     const value = await setting('sites.' + id, SITE[id].defaultEnabled);
@@ -316,6 +364,10 @@ schedule:
   }
 
   async function runBatch(options = {}) {
+    if (!(await deviceEnabled())) {
+      GM_log('当前设备未启用本脚本，已跳过批量执行');
+      return '当前设备未启用本脚本';
+    }
     const force = Boolean(options?.force);
     const startup = Boolean(options?.startup);
     const sites = [];
@@ -330,6 +382,10 @@ schedule:
     const results = [];
     try {
       for (const site of sites) {
+        if (!(await deviceEnabled())) {
+          GM_log('当前设备已停用本脚本，中止剩余站点');
+          break;
+        }
         if (!(await siteEnabled(site.id))) continue;
         if (!force && await completedToday(site.id)) continue;
         await write('batchLock', { token: batchId, at: Date.now() });
@@ -936,6 +992,12 @@ schedule:
     if (running) return running;
     running = (async () => {
       const perform = async () => {
+        if (!(await deviceEnabled())) {
+          const outcome = result('disabled', '当前设备未启用本脚本，请先在菜单或设置中启用');
+          if (job?.token) return publish(outcome);
+          show(outcome.status, outcome.message);
+          return outcome;
+        }
         if (!(await siteEnabled(id))) return publish(result('disabled', '本站已在个人配置中停用'));
         if (!force && await completedToday(id)) {
           clearSubmitted();
@@ -964,6 +1026,7 @@ schedule:
   }
 
   async function openSite(site) {
+    if (!(await deviceEnabled())) { show('disabled', '当前设备未启用本脚本，请先在菜单或设置中启用'); return; }
     if (!(await siteEnabled(site))) { show('disabled', '本站已停用，请先到配置中启用'); return; }
     const url = new URL(SITE[site].url);
     url.searchParams.set(JOB_PARAM, `manual_${Date.now()}_${site}`);
@@ -971,6 +1034,10 @@ schedule:
   }
 
   async function requestManualBatch() {
+    if (!(await deviceEnabled())) {
+      show('disabled', '当前设备未启用本脚本，请先在菜单或设置中启用');
+      return '当前设备未启用本脚本';
+    }
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     show('busy', '正在请求后台启动全站重新核验');
     await write('manualRequest', { id: requestId, at: Date.now() });
@@ -985,7 +1052,22 @@ schedule:
     return runBatch({ force: true, startup: false });
   }
 
+  let refreshDeviceMenu = null;
+  async function toggleDeviceEnabled() {
+    const next = await setDeviceEnabled(!(await deviceEnabled()));
+    if (refreshDeviceMenu) await refreshDeviceMenu();
+    show(
+      next ? 'enabled' : 'disabled',
+      next
+        ? '当前设备已启用脚本，下次运行生效（仅本设备有效，不同步）'
+        : '当前设备已停用脚本：自动与手动签到均已拦截（仅本设备有效，不同步）'
+    );
+    return next;
+  }
+
   async function main() {
+    if (!refreshDeviceMenu) refreshDeviceMenu = setupDeviceMenu(toggleDeviceEnabled);
+    await refreshDeviceMenu();
     GM_registerMenuCommand('本站：检查并签到', () => run({ force: true }));
     GM_registerMenuCommand('打开本站签到页', () => openSite(id));
     GM_registerMenuCommand('全部已启用网站：立即重新核验并签到', () =>
@@ -996,6 +1078,10 @@ schedule:
       show(enabled ? 'enabled' : 'disabled', enabled ? '本站已启用，下次运行生效' : '已停用：访问、单站、批量和启动检查均不再提交');
     });
     GM_registerMenuCommand('站点与启动设置', () => CAT_userConfig());
+    if (!(await deviceEnabled())) {
+      if (job?.token) await run();
+      return;
+    }
     // A server-side login redirect may discard the URL marker before document-start.
     if (!job && (SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
       const pending = await read('pending:' + id, null);

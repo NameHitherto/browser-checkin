@@ -41,7 +41,15 @@ export function validateRegistry(registry) {
   return registry;
 }
 function configBlock(registry) {
-  return `/* ==UserConfig==\nsites:\n${registry.map(site => `  ${site.id}:\n    title: ${JSON.stringify(site.name + '：启用签到')}\n    type: checkbox\n    default: ${site.defaultEnabled}`).join('\n')}
+  return `/* ==UserConfig==
+device:
+  enabled:
+    title: "在当前设备启用本脚本"
+    description: "仅保存在当前浏览器本地，不随脚本猫云同步；新设备默认关闭，需在指定设备手动开启"
+    type: checkbox
+    default: false
+sites:
+${registry.map(site => `  ${site.id}:\n    title: ${JSON.stringify(site.name + '：启用签到')}\n    type: checkbox\n    default: ${site.defaultEnabled}`).join('\n')}
 behavior:
   autoVisit:
     title: 访问签到页面时自动执行
@@ -72,8 +80,8 @@ export async function generate() {
   const home = `https://github.com/${release.owner}/${release.repository}`;
   const values = Object.fromEntries(registry.map(site => [site.id,site]));
   const common = `  const VERSION = ${JSON.stringify(pkg.version)};\n  const SITE = ${JSON.stringify(values,null,2)};\n` + await read('src/runtime.js');
-  const grants = ['GM_openInTab','GM_getValue','GM_setValue','GM.getValue','GM.setValue','GM_log','GM_notification','GM_registerMenuCommand','GM_addValueChangeListener','GM_removeValueChangeListener'];
-  const header = (kind) => `// ==UserScript==\n// @name         三站签到 · ${kind === 'worker' ? '页面执行器' : '定时与一键执行'}\n// @namespace    local.namehitherto.checkin\n// @version      ${pkg.version}\n// @description  ${kind === 'worker' ? '浏览器会话复用；可配置站点开关；官网结果复核' : '浏览器启动时检查每日状态并打开未完成网站；支持全局手动一键全站重新核验'}\n${kind === 'worker' ? registry.flatMap(site => site.matches).map(match => `// @match        ${match}\n`).join('') + '// @run-at       document-start\n// @inject-into  content\n// @noframes\n' : '// @background\n'}// @storageName  local.namehitherto.three-sites.checkin.v1\n${[...grants,...(kind==='worker'?['CAT_userConfig']:[])].map(grant=>`// @grant        ${grant}\n`).join('')}// @updateURL    ${base}/${kind}.meta.js\n// @downloadURL  ${base}/${kind}.user.js\n// @homepageURL  ${home}\n// @supportURL   ${home}/issues\n// @license      MIT\n// ==/UserScript==\n`;
+  const grants = ['GM_openInTab','GM_getValue','GM_setValue','GM.getValue','GM.setValue','GM_log','GM_notification','GM_registerMenuCommand','GM_unregisterMenuCommand','GM_addValueChangeListener','GM_removeValueChangeListener','CAT_userConfig'];
+  const header = (kind) => `// ==UserScript==\n// @name         三站签到 · ${kind === 'worker' ? '页面执行器' : '定时与一键执行'}\n// @namespace    local.namehitherto.checkin\n// @version      ${pkg.version}\n// @description  ${kind === 'worker' ? '浏览器会话复用；设备级本地开关；可配置站点开关；官网结果复核' : '浏览器启动时检查每日状态并打开未完成网站；支持设备级本地开关与全局手动一键全站重新核验'}\n${kind === 'worker' ? registry.flatMap(site => site.matches).map(match => `// @match        ${match}\n`).join('') + '// @run-at       document-start\n// @inject-into  content\n// @noframes\n' : '// @background\n'}// @storageName  local.namehitherto.three-sites.checkin.v1\n${grants.map(grant=>`// @grant        ${grant}\n`).join('')}// @updateURL    ${base}/${kind}.meta.js\n// @downloadURL  ${base}/${kind}.user.js\n// @homepageURL  ${home}\n// @supportURL   ${home}/issues\n// @license      MIT\n// ==/UserScript==\n`;
   let adapters = '';
   for (const name of new Set(registry.map(site=>site.adapter))) {
     const code = await read(`src/sites/${name}.js`);
@@ -85,7 +93,7 @@ export async function generate() {
   if (!workerSource.includes('/* ADAPTERS */')) throw new Error('缺少适配器插入点');
   const files = {
     'worker.user.js':header('worker')+'\n'+configBlock(registry)+'\n(() => {\n  \'use strict\';\n'+common+workerSource.replace('/* ADAPTERS */',adapters)+'\n})();\n',
-    'scheduler.user.js':header('scheduler')+'\nreturn (async () => {\n  \'use strict\';\n'+common+await read('src/scheduler.js')+'\n})();\n',
+    'scheduler.user.js':header('scheduler')+'\n'+configBlock(registry)+'\nreturn (async () => {\n  \'use strict\';\n'+common+await read('src/scheduler.js')+'\n})();\n',
     'worker.meta.js':header('worker'),
     'scheduler.meta.js':header('scheduler'),
     'checkin.user.sub.js':`// ==UserSubscribe==\n// @name         网页签到工具集\n// @description  实时浏览器登录态、启动检查、逐站每日状态与手动一键全站核验\n// @version      ${pkg.version}\n// @author       ${release.owner}\n// @scriptUrl    ${base}/worker.user.js\n// @scriptUrl    ${base}/scheduler.user.js\n// @homepageURL  ${home}\n// ==/UserSubscribe==\n`,

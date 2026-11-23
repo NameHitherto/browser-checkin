@@ -12,6 +12,47 @@
   const setting = (key, fallback) => getValue(key, fallback);
   const setSetting = setValue;
 
+  const DEVICE_ENABLED_KEY = 'device.enabled';
+  async function deviceEnabled() {
+    const value = await setting(DEVICE_ENABLED_KEY, false);
+    if (typeof value !== 'boolean') {
+      GM_log('本设备启用开关配置异常，已安全回退为停用', 'warn');
+      return false;
+    }
+    return value;
+  }
+  async function setDeviceEnabled(enabled) {
+    const next = Boolean(enabled);
+    await setSetting(DEVICE_ENABLED_KEY, next);
+    return next;
+  }
+  function setupDeviceMenu(onToggle) {
+    let menuId = null;
+    let seq = 0;
+    const refresh = async () => {
+      if (typeof GM_registerMenuCommand !== 'function') return;
+      const current = ++seq;
+      const enabled = await deviceEnabled();
+      if (current !== seq) return;
+      if (menuId != null && typeof GM_unregisterMenuCommand === 'function') {
+        try { GM_unregisterMenuCommand(menuId); } catch {}
+      }
+      menuId = GM_registerMenuCommand(
+        enabled ? '当前设备：脚本已启用（点击停用）' : '当前设备：脚本已停用（点击启用）',
+        () => Promise.resolve(onToggle()).catch(error => GM_log(error?.message || '切换本设备开关失败', 'warn')),
+        { id: 'device-enabled-toggle' }
+      );
+    };
+    if (typeof GM_addValueChangeListener === 'function') {
+      try {
+        GM_addValueChangeListener(DEVICE_ENABLED_KEY, () => {
+          refresh().catch(() => {});
+        });
+      } catch {}
+    }
+    return refresh;
+  }
+
   async function siteEnabled(id) {
     if (!SITE[id]) return false;
     const value = await setting('sites.' + id, SITE[id].defaultEnabled);
@@ -126,6 +167,10 @@
   }
 
   async function runBatch(options = {}) {
+    if (!(await deviceEnabled())) {
+      GM_log('当前设备未启用本脚本，已跳过批量执行');
+      return '当前设备未启用本脚本';
+    }
     const force = Boolean(options?.force);
     const startup = Boolean(options?.startup);
     const sites = [];
@@ -140,6 +185,10 @@
     const results = [];
     try {
       for (const site of sites) {
+        if (!(await deviceEnabled())) {
+          GM_log('当前设备已停用本脚本，中止剩余站点');
+          break;
+        }
         if (!(await siteEnabled(site.id))) continue;
         if (!force && await completedToday(site.id)) continue;
         await write('batchLock', { token: batchId, at: Date.now() });
