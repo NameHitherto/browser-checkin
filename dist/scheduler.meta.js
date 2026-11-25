@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.6.0
+// @version      1.6.1
 // @description  浏览器启动时检查每日状态并打开未完成网站；支持设备级本地开关与全局手动一键全站重新核验
 // @background
 // @storageName  local.namehitherto.three-sites.checkin.v1

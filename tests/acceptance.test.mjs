@@ -339,18 +339,223 @@ await test('HiFiTi：未从首页触发提交时直接访问 sg_sign.htm 不自�
  assert.equal((await e1.api.hifiti()).status,'already');assert.deepEqual(e1.actions,[]);e1.cleanup();
 });
 
-function signButton(text='立即签到',signed=false){const state={text,signed};return {state,get textContent(){return state.text},classList:{contains:k=>k==='is-signed'&&state.signed},getClientRects:()=>[{}],click(){},disabled:false}}
-await test('库库：已签按钮不点击，也不触发抽奖',async()=>{
- const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton('今日已签',true);let clicks=0;b.click=()=>clicks++;e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'already');assert.equal(clicks,0);e.cleanup();
+function kukuNode(text = '', classes = [], { hidden = false, disabled = false } = {}) {
+ const children = new Map(), handlers = new Map();
+ const node = {
+  textContent: text, hidden, disabled, style: {}, children,
+  classList: { contains: name => classes.includes(name) },
+  getClientRects() { return this.hidden || this.style.display === 'none' ? [] : [{}]; },
+  querySelector(selector) { return children.get(selector) || null; },
+  querySelectorAll(selector) { const v = children.get(selector); return v ? (Array.isArray(v) ? v : [v]) : []; },
+  addEventListener(type, fn) { handlers.set(type, fn); },
+  dispatchEvent(ev) { handlers.get(ev?.type)?.(ev); return true; },
+  focus() { handlers.get('focus')?.(); },
+  click() { handlers.get('click')?.(); },
+ };
+ return node;
+}
+function kukuUi({ path = '/', href = null, loggedIn = true, saved = new Map(), values = new Map() } = {}) {
+ const e = env('kuku.baidu.com', path, saved, values);
+ if (href) e.sandbox.location.href = href;
+ e.sandbox.Event = class Event { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } };
+ const actions = [];
+ const profile = kukuNode('测试用户');
+ const authLogin = kukuNode('登录');
+ const sidebarEntry = kukuNode('签到');
+ const closeBtn = kukuNode('关闭');
+ if (loggedIn) {
+  e.elements.set('[data-testid="user-profile"]', profile);
+  e.elements.set('[data-testid="sidebar-signin-entry"]', sidebarEntry);
+ } else {
+  e.elements.set('[data-testid="sidebar-auth-login"]', authLogin);
+ }
+ function makeCard({ prefix: cardPrefix = 'sidebar-signin-card', ctaText = '立即签到', withDays = true, signedCell = false } = {}) {
+  const card = kukuNode('');
+  const cta = kukuNode(ctaText);
+  const days = kukuNode('今天');
+  card.children.set(`[data-testid="${cardPrefix}-cta"]`, cta);
+  if (withDays) card.children.set(`[data-testid="${cardPrefix}-days"]`, days);
+  if (signedCell) card.children.set('.signin-promo-day--signed-today', kukuNode('已签'));
+  return { card, cta, days };
+ }
+ function mountHoverCard(cardObj) {
+  e.elements.set('[data-testid="sidebar-signin-card"]', [cardObj.card]);
+  e.elements.set('[data-testid="sidebar-signin-card-close"]', closeBtn);
+  closeBtn.addEventListener('click', () => {
+   actions.push('close-hover');
+   e.elements.delete('[data-testid="sidebar-signin-card"]');
+   e.elements.delete('[data-testid="sidebar-signin-card-close"]');
+  });
+ }
+ function toast(text) {
+  e.elements.set('[role="status"]', [kukuNode(text)]);
+ }
+ return { ...e, actions, profile, authLogin, sidebarEntry, closeBtn, makeCard, mountHoverCard, toast };
+}
+await test('库库：批量与单站打开均使用纯净首页 URL（无查询参数污染），并在 /?_at_ 落地页与 /genflowpro 重定向页恢复任务',async()=>{
+ const eBatch = env();
+ const openedUrls = [];
+ eBatch.sandbox.GM_openInTab = url => {
+  openedUrls.push(url);
+  const u = new URL(url), site = registry.find(r => r.hosts.includes(u.hostname));
+  const token = u.searchParams.get('sc_daily_checkin') || eBatch.saved.get(prefix + 'pending:' + site.id)?.token;
+  eBatch.sandbox.GM.setValue(prefix + 'result:' + site.id, { token, status: 'already', message: 'ok' });
+  return { closed: false, close() {} };
+ };
+ await eBatch.api.runBatch({ force: true });
+ const kukuUrl = openedUrls.find(u => u.includes('kuku.baidu.com'));
+ assert.equal(kukuUrl, 'https://kuku.baidu.com/', 'kuku batch tab must not carry sc_daily_checkin query param');
+ eBatch.cleanup();
+
+ const eOpen = kukuUi();
+ let manualOpened = null;
+ eOpen.sandbox.GM_openInTab = url => { manualOpened = url; return {}; };
+ await eOpen.api.openSite('kuku');
+ assert.equal(manualOpened, 'https://kuku.baidu.com/', 'openSite(kuku) must open clean root URL');
+ assert.match(eOpen.saved.get(prefix + 'pending:kuku')?.token || '', /^manual_\d+_kuku$/);
+ eOpen.cleanup();
+
+ // Landing on https://kuku.baidu.com/?_at_=1795583353014#/workbench/new-task claims pending:kuku and clears it:
+ const shared = new Map([['device.enabled', true], [prefix + 'pending:kuku', { token: 'force_sso_kuku', at: 1792854000000 }]]);
+ const eLanding = kukuUi({ path: '/', href: 'https://kuku.baidu.com/?_at_=1795583353014#/workbench/new-task', saved: shared });
+ const signedCard = eLanding.makeCard({ ctaText: '去抽会员' });
+ eLanding.sidebarEntry.addEventListener('pointerenter', () => { eLanding.actions.push('hover'); eLanding.mountHoverCard(signedCard); });
+ await eLanding.api.main();
+ assert.equal(shared.get(prefix + 'result:kuku')?.status, 'already');
+ assert.equal(shared.get(prefix + 'result:kuku')?.token, 'force_sso_kuku');
+ assert.equal(shared.get(prefix + 'pending:kuku'), null, 'pending:kuku must be consumed once claimed');
+ eLanding.cleanup();
+
+ // Server redirect to /genflowpro when logged out reports login with batch token:
+ const redirectSaved = new Map([['device.enabled', true], [prefix + 'pending:kuku', { token: 'batch_redirect_kuku', at: 1792854000000 }]]);
+ const eRedirect = kukuUi({ path: '/genflowpro', loggedIn: false, saved: redirectSaved });
+ await eRedirect.api.main();
+ assert.equal(redirectSaved.get(prefix + 'result:kuku')?.status, 'login');
+ assert.equal(redirectSaved.get(prefix + 'result:kuku')?.token, 'batch_redirect_kuku');
+ eRedirect.cleanup();
 });
-await test('库库：只点官网当天签到一次，再等待已签状态',async()=>{
- const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton();let clicks=0;b.click=()=>{clicks++;b.state.text='今日已签';b.state.signed=true};e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'success');assert.equal(clicks,1);assert.equal(e.calls.length,0);e.cleanup();
+await test('库库：侧栏悬停唤起签到卡，今日已签（去抽会员或倒计时）不点击抽奖且自动收起浮层',async()=>{
+ for (const ctaLabel of ['去抽会员', '去抽会员 (5)']) {
+  const e = kukuUi();
+  const cardObj = e.makeCard({ ctaText: ctaLabel });
+  cardObj.cta.addEventListener('click', () => assert.fail('must never click lottery CTA'));
+  e.sidebarEntry.addEventListener('pointerenter', () => { e.actions.push('hover'); e.mountHoverCard(cardObj); });
+  assert.equal((await e.api.kuku()).status, 'already');
+  assert.deepEqual(e.actions, ['hover', 'close-hover']);
+  e.cleanup();
+ }
 });
-await test('库库：要求登录时不点击',async()=>{
- const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton('登录领奖');b.click=()=>assert.fail('must not click');e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'login');e.cleanup();
+await test('库库：侧栏签到卡等待 homepage 状态就绪（忽略初始无日历占位态），单次点击立即签到并等待刷新为去抽会员',async()=>{
+ const e = kukuUi();
+ // Initially SigninPromoCard has status=null -> renders "登录领奖" without days element:
+ const cardObj = e.makeCard({ ctaText: '登录领奖', withDays: false });
+ let clicks = 0;
+ cardObj.cta.addEventListener('click', () => {
+  clicks++;
+  e.actions.push('sign');
+  cardObj.cta.disabled = true;
+  e.after(600, () => { cardObj.cta.disabled = false; cardObj.cta.textContent = '去抽会员 (5)'; });
+ });
+ e.sidebarEntry.addEventListener('pointerenter', () => {
+  e.actions.push('hover');
+  e.mountHoverCard(cardObj);
+  e.after(600, () => {
+   cardObj.card.children.set('[data-testid="sidebar-signin-card-days"]', cardObj.days);
+   cardObj.cta.textContent = '立即签到';
+  });
+ });
+ assert.equal((await e.api.run()).status, 'success');
+ assert.equal(clicks, 1);
+ assert.deepEqual(e.actions, ['hover', 'sign', 'close-hover']);
+ assert.equal(await e.api.completedToday('kuku'), true);
+ assert.equal(e.calls.length, 0);
+ e.cleanup();
 });
-await test('库库：点击后无成功状态为未知，不循环点击',async()=>{
- const e=env('kuku.baidu.com','/operation/activitys/kukuPcSignAct/main');const b=signButton();let clicks=0;b.click=()=>clicks++;e.elements.set('button.pc-sign-btn',[b]);assert.equal((await e.api.kuku()).status,'unknown');assert.equal(clicks,1);e.cleanup();
+await test('库库：左下角自动弹出 SigninPromoWidget 时可直接完成单次签到或已签复核',async()=>{
+ const e = kukuUi();
+ const promo = e.makeCard({ prefix: 'signin-promo', ctaText: '立即签到' });
+ e.elements.set('[data-testid="signin-promo"]', [promo.card]);
+ e.sidebarEntry.addEventListener('pointerenter', () => assert.fail('need not hover when promo card already visible'));
+ promo.cta.addEventListener('click', () => { e.actions.push('promo-sign'); promo.cta.textContent = '去抽会员'; });
+ assert.equal((await e.api.kuku()).status, 'success');
+ assert.deepEqual(e.actions, ['promo-sign']);
+ e.cleanup();
+});
+await test('库库：未登录状态（侧栏登录入口、游客签到卡或登录路径）不点击任何按钮',async()=>{
+ // Case 1: sidebar-auth-login button visible
+ const e1 = kukuUi({ loggedIn: false });
+ e1.authLogin.addEventListener('click', () => assert.fail('must not click login'));
+ assert.equal((await e1.api.kuku()).status, 'login');
+ e1.cleanup();
+ // Case 2: guest promo card visible before sidebar settles
+ const e2 = kukuUi({ loggedIn: false });
+ e2.elements.delete('[data-testid="sidebar-auth-login"]');
+ const guestPromo = e2.makeCard({ prefix: 'signin-promo', ctaText: '登录领奖', withDays: true });
+ guestPromo.cta.addEventListener('click', () => assert.fail('must not click guest CTA'));
+ e2.elements.set('[data-testid="signin-promo"]', [guestPromo.card]);
+ assert.equal((await e2.api.kuku()).status, 'login');
+ e2.cleanup();
+});
+await test('库库：左侧栏折叠或隐藏时先展开侧栏，再通过悬停签到卡完成签到',async()=>{
+ const e = kukuUi({ loggedIn: false });
+ e.elements.delete('[data-testid="sidebar-auth-login"]');
+ const restoreBtn = kukuNode('展开侧栏');
+ const cardObj = e.makeCard({ ctaText: '立即签到' });
+ cardObj.cta.addEventListener('click', () => { e.actions.push('sign'); cardObj.cta.textContent = '去抽会员'; });
+ e.sidebarEntry.addEventListener('pointerenter', () => { e.actions.push('hover'); e.mountHoverCard(cardObj); });
+ restoreBtn.addEventListener('click', () => {
+  e.actions.push('expand');
+  e.elements.delete('[data-testid="workbench-left-sidebar-restore"]');
+  e.elements.set('[data-testid="user-profile"]', e.profile);
+  e.elements.set('[data-testid="sidebar-signin-entry"]', e.sidebarEntry);
+ });
+ e.elements.set('[data-testid="workbench-left-sidebar-restore"]', restoreBtn);
+ assert.equal((await e.api.kuku()).status, 'success');
+ assert.deepEqual(e.actions, ['expand', 'hover', 'sign', 'close-hover']);
+ e.cleanup();
+});
+await test('库库：主工作台内嵌活动中心 iframe 回退可用，但拒绝直接访问旧活动子路径',async()=>{
+ const eOld = kukuUi({ path: '/operation/activitys/kukuPcSignAct/main' });
+ assert.equal((await eOld.api.kuku()).status, 'manual');
+ eOld.cleanup();
+
+ const eFallback = kukuUi();
+ eFallback.elements.delete('[data-testid="sidebar-signin-entry"]');
+ const fallbackBtn = kukuNode('签到');
+ const iframeBtn = {
+  textContent: '立即签到', disabled: false, style: {},
+  classList: { signed: false, contains(k) { return k === 'is-signed' && this.signed; } },
+  getClientRects: () => [{}],
+  click() { eFallback.actions.push('iframe-sign'); this.textContent = '今日已签'; this.classList.signed = true; },
+ };
+ const iframeDoc = { body: { innerText: '' }, querySelectorAll: sel => sel === 'button.pc-sign-btn' ? [iframeBtn] : [] };
+ const iframe = kukuNode('');
+ iframe.contentDocument = iframeDoc;
+ fallbackBtn.addEventListener('click', () => {
+  eFallback.actions.push('open-modal');
+  eFallback.elements.set('iframe[data-testid="signin-activity-center-iframe"]', iframe);
+ });
+ eFallback.elements.set('[data-testid="sidebar-sign-in-entry"]', fallbackBtn);
+ assert.equal((await eFallback.api.kuku()).status, 'success');
+ assert.deepEqual(eFallback.actions, ['open-modal', 'iframe-sign']);
+ eFallback.cleanup();
+});
+await test('库库：点击后遇人机验证、会话过期提示、明确失败或超时未确认均不循环点击',async()=>{
+ for (const [msg, expected] of [
+  ['请完成滑动验证', 'manual'],
+  ['账户已过期，请重新登录～', 'login'],
+  ['签到失败，请稍后再试~', 'failed'],
+  [null, 'unknown'],
+ ]) {
+  const e = kukuUi();
+  const cardObj = e.makeCard({ ctaText: '立即签到' });
+  let clicks = 0;
+  cardObj.cta.addEventListener('click', () => { clicks++; if (msg) e.toast(msg); });
+  e.sidebarEntry.addEventListener('pointerenter', () => e.mountHoverCard(cardObj));
+  assert.equal((await e.api.kuku()).status, expected);
+  assert.equal(clicks, 1);
+  e.cleanup();
+ }
 });
 
 function kuroEnv({ path = '/mc/home/9', storage = null, saved = new Map(), values = new Map() } = {}) {
@@ -482,16 +687,16 @@ await test('ECY 登录重定向丢失网址标记后仍能回传需登录结果'
 });
 await test('调度器：忽略过期结果、按运行标识收集全部已启用站点并关闭成功页',async()=>{
  const e=env();let closed=0,opened=0;e.saved.set(prefix+'result:zhiyao',{token:'OLD',status:'success'});
- e.sandbox.GM_openInTab=url=>{opened++;const u=new URL(url),token=u.searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);setTimeout(()=>e.saved.set(prefix+'result:'+id,{token,status:'already',message:'verified'}),1);return {close(){closed++}}};
+ e.sandbox.GM_openInTab=url=>{opened++;const u=new URL(url),site=registry.find(r=>r.hosts.includes(u.hostname)),id=site.id,token=u.searchParams.get('sc_daily_checkin')||e.saved.get(prefix+'pending:'+id)?.token;setTimeout(()=>e.saved.set(prefix+'result:'+id,{token,status:'already',message:'verified'}),1);return {close(){closed++}}};
  const run=e.api.runBatch();await run;assert.equal(opened,enabledSites.length);assert.equal(closed,enabledSites.length);assert.equal(e.saved.get(prefix+'batchLock'),null);e.cleanup();
 });
 await test('调度器：登录失败保留页面并正确报告批次失败',async()=>{
- const e=env();let closed=0;e.sandbox.GM_openInTab=url=>{const token=new URL(url).searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);e.saved.set(prefix+'result:'+id,{token,status:id==='ecy'?'login':'already',message:'test'});return {close(){closed++}}};
+ const e=env();let closed=0;e.sandbox.GM_openInTab=url=>{const u=new URL(url),site=registry.find(r=>r.hosts.includes(u.hostname)),id=site.id,token=u.searchParams.get('sc_daily_checkin')||e.saved.get(prefix+'pending:'+id)?.token;e.saved.set(prefix+'result:'+id,{token,status:id==='ecy'?'login':'already',message:'test'});return {close(){closed++}}};
  await assert.rejects(e.api.runBatch(),/1个站点未完成/);assert.equal(closed,enabledSites.length-1);assert.equal(e.saved.get(prefix+'batchLast').results.length,enabledSites.length);e.cleanup();
 });
 await test('禁用站点同时拦截页面签到、单站打开和批量启动',async()=>{
  const e=env();e.saved.set('sites.zhiyao',false);let opened=[];
- e.sandbox.GM_openInTab=url=>{opened.push(url);const token=new URL(url).searchParams.get('sc_daily_checkin');const id=token.split('_').at(-1);e.saved.set(prefix+'result:'+id,{token,status:'already',message:'ok'});return {close(){}}};
+ e.sandbox.GM_openInTab=url=>{opened.push(url);const u=new URL(url),site=registry.find(r=>r.hosts.includes(u.hostname)),id=site.id,token=u.searchParams.get('sc_daily_checkin')||e.saved.get(prefix+'pending:'+id)?.token;e.saved.set(prefix+'result:'+id,{token,status:'already',message:'ok'});return {close(){}}};
  assert.equal((await e.api.run()).status,'disabled');await e.api.openSite('zhiyao');await e.api.runBatch();assert.equal(e.calls.length,0);assert.equal(opened.length,enabledSites.length-1);assert.ok(!opened.some(u=>u.includes('zhiyaoapi')));e.cleanup();
 });
 await test('关闭访问时签到后，普通访问不发送请求',async()=>{
@@ -503,7 +708,8 @@ await test('加载新版和读取默认配置不覆盖个人设置',async()=>{
 function batchPages(e, statusFor = () => 'already') {
  const opened = [], closed = [], tokens = [];
  e.sandbox.GM_openInTab = url => {
-  const token = new URL(url).searchParams.get('sc_daily_checkin'), id = token.split('_').at(-1);
+  const u = new URL(url), site = registry.find(r => r.hosts.includes(u.hostname));
+  const id = site.id, token = u.searchParams.get('sc_daily_checkin') || e.saved.get(prefix + 'pending:' + id)?.token;
   const status = statusFor(id, token);
   opened.push(id);
   tokens.push(token);
@@ -746,7 +952,8 @@ await test('批量执行中途关闭本设备开关立即中止剩余站点打�
  const e=env();
  const opened=[];
  e.sandbox.GM_openInTab=url=>{
-  const token=new URL(url).searchParams.get('sc_daily_checkin'), id=token.split('_').at(-1);
+  const u=new URL(url), site=registry.find(r=>r.hosts.includes(u.hostname));
+  const id=site.id, token=u.searchParams.get('sc_daily_checkin')||e.saved.get(prefix+'pending:'+id)?.token;
   opened.push(id);
   e.sandbox.GM.setValue(prefix+'result:'+id,{token,status:'already',message:'ok'});
   if(opened.length===1) e.sandbox.GM.setValue('device.enabled',false);

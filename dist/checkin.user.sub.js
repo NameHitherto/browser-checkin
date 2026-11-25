@@ -1,7 +1,7 @@
 // ==UserSubscribe==
 // @name         网页签到工具集
 // @description  实时浏览器登录态、启动检查、逐站每日状态与手动一键全站核验
-// @version      1.6.0
+// @version      1.6.1
 // @author       NameHitherto
 // @scriptUrl    https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/worker.user.js
 // @scriptUrl    https://raw.githubusercontent.com/NameHitherto/browser-checkin/main/dist/scheduler.user.js

@@ -144,8 +144,10 @@
   async function openSite(site) {
     if (!(await deviceEnabled())) { show('disabled', '当前设备未启用本脚本，请先在菜单或设置中启用'); return; }
     if (!(await siteEnabled(site))) { show('disabled', '本站已停用，请先到配置中启用'); return; }
+    const token = `manual_${Date.now()}_${site}`;
     const url = new URL(SITE[site].url);
-    url.searchParams.set(JOB_PARAM, `manual_${Date.now()}_${site}`);
+    if (SITE[site].cleanUrl) await write('pending:' + site, { token, at: Date.now() });
+    else url.searchParams.set(JOB_PARAM, token);
     return GM_openInTab(url.href, { active: true, insert: false, setParent: false });
   }
 
@@ -198,11 +200,13 @@
       if (job?.token) await run();
       return;
     }
-    // A server-side login redirect may discard the URL marker before document-start.
-    if (!job && (SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
+    // Recover job token when cleanUrl is enabled or server-side login redirect stripped URL marker.
+    if (!job && (SITE[id].cleanUrl || SITE[id].loginPaths.includes(location.pathname) || SITE[id].loginPrefixes.some(prefix => location.pathname.startsWith(prefix)))) {
       const pending = await read('pending:' + id, null);
       if (pending?.token && Date.now() - pending.at < 110000) {
         job = { ...pending, force: pending.token.startsWith('force_') };
+        try { sessionStorage.setItem(PREFIX + 'job', JSON.stringify(job)); } catch {}
+        if (SITE[id].cleanUrl) await write('pending:' + id, null);
       }
     }
     const confirmTarget = Boolean(readSubmitted()) && (SITE[id].confirmPaths || []).includes(location.pathname);

@@ -44,9 +44,9 @@ for (const state of ['device-disabled', 'completed', 'failed']) {
       GM_openInTab(url) {
         counts.opens++;
         const target = new URL(url);
-        const token = target.searchParams.get('sc_daily_checkin');
-        openedTokens.push(token);
         const site = registry.find(row => row.hosts.includes(target.hostname));
+        const token = target.searchParams.get('sc_daily_checkin') || saved.get(prefix + 'pending:' + site.id)?.token;
+        openedTokens.push(token);
         saved.set(prefix + 'result:' + site.id, { token, status: 'already', message: 'synthetic' });
         return { closed: false, close() { counts.closes++; } };
       },

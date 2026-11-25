@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         三站签到 · 定时与一键执行
 // @namespace    local.namehitherto.checkin
-// @version      1.6.0
+// @version      1.6.1
 // @description  浏览器启动时检查每日状态并打开未完成网站；支持设备级本地开关与全局手动一键全站重新核验
 // @background
 // @storageName  local.namehitherto.three-sites.checkin.v1
@@ -74,7 +74,7 @@ schedule:
 
 return (async () => {
   'use strict';
-  const VERSION = "1.6.0";
+  const VERSION = "1.6.1";
   const SITE = {
   "zhiyao": {
     "id": "zhiyao",
@@ -124,7 +124,8 @@ return (async () => {
     "id": "kuku",
     "name": "库库 AI",
     "adapter": "kuku",
-    "url": "https://kuku.baidu.com/operation/activitys/kukuPcSignAct/main",
+    "url": "https://kuku.baidu.com/",
+    "cleanUrl": true,
     "hosts": [
       "kuku.baidu.com"
     ],
@@ -132,12 +133,12 @@ return (async () => {
       "https://kuku.baidu.com/*"
     ],
     "autoPaths": [
-      "/operation/activitys/kukuPcSignAct/main",
-      "/operation/activitys/kukuPcSignAct/main/"
+      "/"
     ],
     "defaultEnabled": true,
     "loginPaths": [
-      "/login"
+      "/login",
+      "/genflowpro"
     ],
     "loginPrefixes": []
   },
@@ -383,7 +384,7 @@ return (async () => {
         await write('batchLock', { token: batchId, at: Date.now() });
         const token = `${force ? 'force' : 'batch'}_${batchId}_${site.id}`;
         const url = new URL(site.url);
-        url.searchParams.set('sc_daily_checkin', token);
+        if (!site.cleanUrl) url.searchParams.set('sc_daily_checkin', token);
         await write('pending:' + site.id, { token, at: Date.now() });
         let tab;
         let outcome;

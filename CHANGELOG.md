@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.6.1
+
+- 修复 **库库 AI（`kuku.baidu.com`）** 签到逻辑与入口，解决旧版直接打开 `/operation/activitys/kukuPcSignAct/main?sc_daily_checkin=...` 触发服务端跨网关 `STOKEN` 域冲突、进而在 SSO 校验时下发 `Set-Cookie: BDUSS=; expires=1970` 强制注销百度全站登录凭证的问题。
+- 库库注册表入口切换为官方主工作台 `https://kuku.baidu.com/`（补充 `/genflowpro` 登录重定向路径），并新增 `cleanUrl: true` 纯净无参打开机制：批量与单站打开均完全不附加任何自定义 URL 查询参数，避免干扰百度 `flow-level: 3` SSO 换票重定向（`/?stoken=...` → `/?_at_=...`），通过共享存储 `pending:kuku` 消费并写入同标签页 `sessionStorage` 关联批次结果。
+- 库库适配器重构为主工作台原生签到流程：等待主站 `userreport` / `profile` 鉴权初始化完成，优先通过左侧栏 `sidebar-signin-entry` 悬停卡片（或左下角自动弹出的 `SigninPromoWidget`）由官方 `pc-genflow-pro` 处理器携带完整会话参数与风控参数完成单次 `立即签到`，等待 `homepage` 复核刷新为 `去抽会员`（今日已签）后自动收起悬停浮层且绝不触发抽奖；支持折叠/隐藏侧栏自动展开与主工作台内嵌活动中心 iframe 回退，并主动拦截对旧活动子路径的直接执行。
+- 补充更新库库无参打开、SSO 落地页恢复、悬停卡片占位态等待、未登录拦截、折叠侧栏展开、内嵌 iframe 回退及风控/过期提示离线测试（总计 95 项离线测试通过）。
+
 ## 1.6.0
 
 - 新增 **设备级本地启用开关**（`device.enabled`，默认关闭 `false`）：由于脚本猫的云同步会跨设备同步脚本本身的开启/关闭状态，但不会同步脚本存储（`GM_setValue` / `UserConfig`），现可将两个脚本在脚本猫扩展中保持开启，仅通过脚本内部的本地开关选择让脚本在指定设备上运行。

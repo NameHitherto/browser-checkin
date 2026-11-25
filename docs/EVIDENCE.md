@@ -63,3 +63,10 @@
 - 依据脚本猫官方云同步机制（`scriptcat-sync.json` 跨设备同步脚本源码与启用状态，而 `GM_setValue` / `UserConfig` 仅保存在当前浏览器本地），在共享 `@storageName` 中新增 `device.enabled` 开关（默认 `false`），并在页面执行器与后台脚本的 `==UserConfig==` 及动态菜单（`GM_registerMenuCommand` / `GM_unregisterMenuCommand` + `GM_addValueChangeListener`）中同步暴露。
 - 设备开关关闭或配置异常时完全拦截启动检查、访问页面自动签到及所有单站/全站手动触发入口，且不产生存储写入或定时器；批量执行中途关闭会立即中止剩余站点打开。
 - 91 项本地测试（85 项离线行为场景、3 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；尚未在真实多设备 ScriptCat 云同步环境中由代理直接完成端到端实测。
+
+## 1.6.1 库库 AI 主工作台签到迁移与凭证保护（2026-11-25）
+
+- 结合用户真实登录故障抓包与 `kuku.baidu.com` 当前 `pc-genflow-pro`（`v1.15.0`）静态资源核实：主工作台 `GET /` 现通过百度 Passport `tpl=genflowpro` SSO 换票（`/?stoken=...` → `302 /?_at_=...`，下发 `domain=.kuku.baidu.com` 的 `STOKEN`，未登录时重定向 `/genflowpro`），并经 `/api/genflowpro/common/userreport` 注入 `{ bdstoken, uinfo, uk }` 会话参数；而旧入口 `/operation/activitys/kukuPcSignAct/main` 属于网盘运营子服务（加载 `nd_bundle`、使用无前导点 `domain=kuku.baidu.com` Cookie 且不走 `genflowpro` 换票），直接顶层访问或携带额外查询参数会导致同名双 `STOKEN` 冲突，触发服务端在 `GET /?_at_=...` 响应中下发 `Set-Cookie: BDUSS=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.baidu.com` 强制销毁全站登录态。
+- 实时核对 `LeftSidebar.gn39d8wy.js`、`SigninPromoWidget.j2gsej9u.js`、`signin-collapse.fzfopbra.js` 与 `HoverCardTrigger.kiev9w2w.js`：主工作台左侧栏内置 `[data-testid="sidebar-signin-entry"]`（`SigninSidebarEntry`）与左下角 `[data-testid="signin-promo"]`（`SigninPromoWidget`），悬停侧栏按钮即挂载 `[data-testid="sidebar-signin-card"]`；其 `SigninPromoCard` 通过主站 `http.post` 调用 `/act/v2/kukuai30/homepage` 与 `/act/v2/kukuai30/signin`（自动携带 `v1.15.0` 会话参数与 `dfxaf3` 反作弊参数），提交后重新请求 `homepage` 校验 `signed_today === true` 并将按钮更新为 `去抽会员` / `去抽会员 (s)`。在真实已登录 Chrome 会话中只读实测悬停 `[data-testid="sidebar-signin-entry"]`，确认卡片正常挂载并返回 `ctaText: "去抽会员"`（且在跨轮次连签 `calendar` 状态为 `5` 时 `.signin-promo-day--signed-today` 为 `false`，以按钮状态为准）。
+- 注册表将 `kuku.url` 改为 `https://kuku.baidu.com/`、`autoPaths: ["/"]`、`loginPaths: ["/login", "/genflowpro"]` 并启用 `cleanUrl: true`（打开标签页不附加 `sc_daily_checkin` 查询参数，改由 `pending:kuku` 单次消费恢复任务）；适配器改为操作主工作台原生签到卡片并在确认已签后自动关闭悬停浮层，保留主工作台同源活动中心 iframe 回退，拒绝在 `/operation/activitys/kukuPcSignAct/main` 直接运行。
+- 95 项本地测试（89 项离线行为场景、3 项零定时器空闲性能检查与 3 项构建/注册检查）通过，构建及构建一致性检查通过；真实已登录浏览器仅执行了主工作台侧栏悬停已签态只读核验，未触发额外签到提交。

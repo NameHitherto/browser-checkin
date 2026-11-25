@@ -22,6 +22,7 @@ export function validateRegistry(registry) {
     if (!site.matches?.length || site.matches.some(match => !site.hosts.some(host => match.startsWith(`https://${host}/`)))) throw new Error('匹配范围必须限于本站 HTTPS 域名');
     if (!site.autoPaths?.length || site.autoPaths.some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('自动路径无效');
     for (const key of ['loginPaths','loginPrefixes']) if (!Array.isArray(site[key]) || site[key].some(p => typeof p !== 'string' || !p.startsWith('/'))) throw new Error('登录重定向路径无效');
+    if (site.cleanUrl !== undefined && typeof site.cleanUrl !== 'boolean') throw new Error('无参打开配置无效');
     if (site.confirmPaths !== undefined && (!Array.isArray(site.confirmPaths) || site.confirmPaths.some(p => typeof p !== 'string' || !p.startsWith('/')))) throw new Error('确认跳转路径无效');
     if (site.apiOrigins !== undefined) {
       if (!Array.isArray(site.apiOrigins)) throw new Error('官方 API 白名单格式无效');

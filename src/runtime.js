@@ -194,7 +194,7 @@
         await write('batchLock', { token: batchId, at: Date.now() });
         const token = `${force ? 'force' : 'batch'}_${batchId}_${site.id}`;
         const url = new URL(site.url);
-        url.searchParams.set('sc_daily_checkin', token);
+        if (!site.cleanUrl) url.searchParams.set('sc_daily_checkin', token);
         await write('pending:' + site.id, { token, at: Date.now() });
         let tab;
         let outcome;
